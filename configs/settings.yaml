@@ -1,0 +1,35 @@
+# 공통 설정. 경로는 저장소 루트 기준 상대경로입니다.
+project:
+  name: seoul-apartment-ml
+  version: 0.1.0
+
+analysis_period:
+  start: "2021-01-01"
+  end: "2026-10-31"
+
+paths:
+  raw_dir: data/raw
+  processed_dir: data/processed
+  sample_dir: data/sample
+  # 아래 sample_* 파일은 합성(가짜) 테스트 데이터입니다. 실제 거래가 아닙니다.
+  sample_transactions: data/sample/sample_transactions_TEST_ONLY.csv
+  sample_base_rates: data/sample/sample_base_rates_TEST_ONLY.csv
+  sample_regulations: data/sample/sample_regulations_TEST_ONLY.csv
+  model_dir: models
+
+split:
+  # 계약일 기준 시간순 분할 비율 (합 = 1.0)
+  train_ratio: 0.70
+  valid_ratio: 0.15
+  test_ratio: 0.15
+  min_rows_per_split: 1
+
+random_seed: 42
+
+models:
+  price_model_path: models/price_model.joblib
+  anomaly_model_path: models/anomaly_model.joblib
+
+classification:
+  # 이상거래 레이블의 정의·생성 기준이 확정되기 전까지 false 를 유지합니다.
+  training_enabled: false
