@@ -82,6 +82,40 @@ PRICE_PER_M2 = "price_per_m2"  # price_krw 에서 파생 → 회귀 입력 금�
 # 기준가격 (UI/이상거래 판단용, 데이터 원천 컬럼 아님)
 REFERENCE_PRICE_KRW = "reference_price_krw"
 
+# ---------------------------------------------------------------------------
+# 거래 특성 (국토교통부 상세 자료에서 받을 수 있는 항목)
+# ---------------------------------------------------------------------------
+# 상세 자료에는 단지 일련번호·거래유형·중개사 소재지·토지임대부 여부가 들어 있다.
+# 실제 수집 데이터(서울 28만건)에서 이상거래와 뚜렷하게 연관된 항목들이다.
+
+COMPLEX_ID = "complex_id"  # 단지 일련번호(aptSeq). 같은 이름의 다른 단지를 구분한다
+IS_DIRECT_DEAL = "is_direct_deal"  # 직거래 1 / 중개거래 0
+AGENT_LOCATION = "agent_location"  # 0 소재지 없음 / 1 같은 자치구 / 2 다른 자치구
+LAND_LEASEHOLD = "land_leasehold"  # 토지임대부 1. 땅값이 빠져 같은 평형이라도 훨씬 싸다
+DEAL_FEATURE_COLUMNS: tuple[str, ...] = (IS_DIRECT_DEAL, AGENT_LOCATION, LAND_LEASEHOLD)
+
+# ---------------------------------------------------------------------------
+# 기준가 비교 (이상거래 레이블의 재료)
+# ---------------------------------------------------------------------------
+# 같은 단지·평형의 '직전 기간 시세'를 기준으로 삼아 실제 거래가가 얼마나 벗어났는지 본다.
+# REFERENCE_PRICE_KRW(회귀 모델의 예상가)와는 다른 개념이다.
+# peer_tier 가 클수록 넓은 그룹에서 만든 기준이라 그 자체가 흔들린다.
+
+PEER_MEDIAN_PRICE_KRW = "peer_median_price_krw"  # 직전 기간 같은 조건의 시세 중앙값
+PEER_TIER = "peer_tier"  # 1 단지+평형 / 2 단지 / 3 법정동+평형 / 4 자치구+평형 / 0 못 만듦
+PRICE_RATIO = "price_ratio"  # price_krw / peer_median_price_krw
+
+# ---------------------------------------------------------------------------
+# 금리 변화량
+# ---------------------------------------------------------------------------
+# 금리는 '수준' 으로 넣으면 안 된다. 금리가 오르는 시기는 경기가 좋은 시기이기도 해서
+# 수준끼리 비교하면 "금리가 높을 때 집값도 높다" 는 거꾸로 된 관계가 나온다.
+# 실제 수집 데이터에서 수준은 +0.137, 전년 대비 변화는 -0.310 이었다.
+
+BASE_RATE_CHANGE_12M = "base_rate_change_12m"  # 12개월 전 대비 변화(%포인트)
+BASE_RATE_CHANGE_3M = "base_rate_change_3m"  # 3개월 전 대비 변화(%포인트)
+BASE_RATE_CHANGE_COLUMNS: tuple[str, ...] = (BASE_RATE_CHANGE_12M, BASE_RATE_CHANGE_3M)
+
 
 @dataclass(frozen=True)
 class ColumnSpec:
@@ -107,6 +141,14 @@ TRANSACTION_SCHEMA: tuple[ColumnSpec, ...] = (
     ColumnSpec(APARTMENT_NAME, "str (nullable)", False, "-", "단지명"),
     ColumnSpec(DONG, "str (nullable)", False, "-", "법정동"),
     ColumnSpec(SOURCE, "str (nullable)", False, "-", "데이터 출처"),
+    ColumnSpec(COMPLEX_ID, "str (nullable)", False, "-", "단지 일련번호(aptSeq)"),
+    ColumnSpec(IS_DIRECT_DEAL, "Int64 (nullable)", False, "0/1", "직거래 여부"),
+    ColumnSpec(
+        AGENT_LOCATION, "Int64 (nullable)", False, "0/1/2", "중개사 소재지 (없음/관내/관외)"
+    ),
+    ColumnSpec(LAND_LEASEHOLD, "Int64 (nullable)", False, "0/1", "토지임대부 여부"),
+    ColumnSpec(BASE_RATE_CHANGE_12M, "float (nullable)", False, "%p", "기준금리 전년 대비 변화"),
+    ColumnSpec(BASE_RATE_CHANGE_3M, "float (nullable)", False, "%p", "기준금리 3개월 대비 변화"),
 )
 
 REQUIRED_COLUMNS: tuple[str, ...] = tuple(c.name for c in TRANSACTION_SCHEMA if c.required)
@@ -115,7 +157,8 @@ OPTIONAL_COLUMNS: tuple[str, ...] = tuple(c.name for c in TRANSACTION_SCHEMA if 
 # 중복 거래 판단 키: 동일 단지·동일 날짜·동일 면적·동일 층·동일 가격이면 중복으로 본다.
 # (apartment_name/dong 이 존재하면 키에 포함 — preprocess.drop_duplicate_transactions 참고)
 DUPLICATE_KEY: tuple[str, ...] = (DISTRICT, CONTRACT_DATE, AREA_M2, FLOOR, PRICE_KRW)
-DUPLICATE_KEY_OPTIONAL: tuple[str, ...] = (DONG, APARTMENT_NAME)
+# complex_id 가 있으면 단지를 정확히 구분한다 (같은 이름의 다른 단지가 511개 있었다).
+DUPLICATE_KEY_OPTIONAL: tuple[str, ...] = (DONG, APARTMENT_NAME, COMPLEX_ID)
 
 # ---------------------------------------------------------------------------
 # 모델 입력 변수 / 정답값 구분
@@ -132,7 +175,9 @@ REGRESSION_NUMERIC_FEATURES: tuple[str, ...] = (
     CONTRACT_YEAR,
     CONTRACT_MONTH,
     BASE_RATE,
+    *BASE_RATE_CHANGE_COLUMNS,
     *REGULATION_COLUMNS,
+    *DEAL_FEATURE_COLUMNS,
 )
 REGRESSION_CATEGORICAL_FEATURES: tuple[str, ...] = (DISTRICT,)
 REGRESSION_FEATURES: tuple[str, ...] = (
@@ -142,7 +187,15 @@ REGRESSION_FEATURES: tuple[str, ...] = (
 
 # 회귀 입력으로 절대 사용하면 안 되는 컬럼 (정답값 및 정답에서 파생된 값)
 REGRESSION_FORBIDDEN_FEATURES: frozenset[str] = frozenset(
-    {PRICE_KRW, PRICE_PER_M2, ANOMALY_LABEL, REFERENCE_PRICE_KRW}
+    {
+        PRICE_KRW,
+        PRICE_PER_M2,
+        ANOMALY_LABEL,
+        REFERENCE_PRICE_KRW,
+        PEER_MEDIAN_PRICE_KRW,
+        PRICE_RATIO,
+        PEER_TIER,
+    }
 )
 
 # 이상거래 분류: 실제 거래가격 사용 가능
@@ -156,7 +209,12 @@ CLASSIFICATION_FEATURES: tuple[str, ...] = (
     *CLASSIFICATION_NUMERIC_FEATURES,
     *CLASSIFICATION_CATEGORICAL_FEATURES,
 )
-CLASSIFICATION_FORBIDDEN_FEATURES: frozenset[str] = frozenset({ANOMALY_LABEL})
+# 이상거래 레이블은 price_ratio = price_krw / peer_median_price_krw 로 만든다.
+# 분류에서는 price_krw 를 입력으로 쓸 수 있으므로, peer_median_price_krw 가 함께 들어가면
+# 레이블을 그대로 역산할 수 있다. peer_tier 도 넓은 단계일수록 이상 판정이 많아 부분 누출이다.
+CLASSIFICATION_FORBIDDEN_FEATURES: frozenset[str] = frozenset(
+    {ANOMALY_LABEL, PEER_MEDIAN_PRICE_KRW, PRICE_RATIO, PEER_TIER}
+)
 
 ANOMALY_LABEL_VALUES: tuple[int, ...] = (0, 1)  # 0 = 정상, 1 = 이상거래 의심
 
@@ -182,6 +240,9 @@ MOLIT_API_COLUMN_MAP: dict[str, str] = {
     "cdealType": "cancel_type",  # 해제여부
     "cdealDay": "cancel_date",  # 해제사유발생일
     "dealingGbn": "deal_type",  # 거래유형 (중개/직거래)
+    "aptSeq": COMPLEX_ID,  # 단지 일련번호 (예: "11110-2234")
+    "estateAgentSggNm": "agent_district",  # 중개사 소재지 (예: "서울 종로구")
+    "landLeaseholdGbn": "land_leasehold_raw",  # 토지임대부 여부 (Y/N)
 }
 
 MOLIT_CSV_COLUMN_MAP: dict[str, str] = {
