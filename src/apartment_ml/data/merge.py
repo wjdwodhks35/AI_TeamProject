@@ -61,6 +61,57 @@ def attach_base_rate(transactions: pd.DataFrame, base_rates: pd.DataFrame) -> pd
     return merged
 
 
+def _rate_as_of(dates: pd.Series, rates: pd.DataFrame) -> pd.Series:
+    """주어진 날짜들에 유효한 기준금리. 첫 적용일보다 이른 날짜는 NaN."""
+    left = pd.DataFrame({"_cd": _as_datetime(dates), "_order": np.arange(len(dates))})
+    merged = pd.merge_asof(
+        left.sort_values("_cd", kind="mergesort"),
+        rates.rename(columns={"effective_date": "_cd_rate", S.BASE_RATE: "_rate"}),
+        left_on="_cd",
+        right_on="_cd_rate",
+        direction="backward",
+    )
+    merged = merged.sort_values("_order")
+    return pd.Series(merged["_rate"].to_numpy(), index=dates.index, dtype="float64")
+
+
+def attach_base_rate_changes(
+    transactions: pd.DataFrame,
+    base_rates: pd.DataFrame,
+    *,
+    months: tuple[int, ...] = (12, 3),
+) -> pd.DataFrame:
+    """계약일과 그 N개월 전의 기준금리 차이를 붙인다 (%포인트).
+
+    금리는 '수준' 으로 모델에 넣으면 안 된다. 금리가 오르는 시기는 경기가 좋은
+    시기이기도 해서, 수준끼리 비교하면 "금리가 높을 때 집값도 높다" 는 거꾸로 된
+    관계가 나온다. 실제 수집 데이터(서울 68개월)에서 기준금리 수준과 평당가의
+    상관은 +0.137 이었고, 전년 대비 변화로 바꾸면 -0.310 이었다.
+
+    ``base_rate`` 가 없으면 ``attach_base_rate`` 를 먼저 적용한다.
+    """
+    missing = [c for c in BASE_RATE_COLUMNS if c not in base_rates.columns]
+    if missing:
+        raise ValueError(f"기준금리 데이터에 컬럼이 없습니다: {missing}")
+
+    out = transactions
+    if S.BASE_RATE not in out.columns or out[S.BASE_RATE].isna().all():
+        out = attach_base_rate(out, base_rates)
+    out = out.copy()
+
+    rates = base_rates.loc[:, list(BASE_RATE_COLUMNS)].copy()
+    rates["effective_date"] = _as_datetime(rates["effective_date"])
+    rates[S.BASE_RATE] = pd.to_numeric(rates[S.BASE_RATE], errors="raise").astype("float64")
+    rates = rates.sort_values("effective_date")
+
+    contract = _as_datetime(out[S.CONTRACT_DATE])
+    current = pd.to_numeric(out[S.BASE_RATE], errors="coerce").astype("float64")
+    for month in months:
+        past = _rate_as_of(contract - pd.DateOffset(months=month), rates)
+        out[f"base_rate_change_{month}m"] = current - past
+    return out
+
+
 def attach_regulation(transactions: pd.DataFrame, regulations: pd.DataFrame) -> pd.DataFrame:
     """규제 이력 테이블을 자치구·계약일 기준으로 0/1 컬럼(REGULATION_COLUMNS)으로 변환해 붙인다.
 
