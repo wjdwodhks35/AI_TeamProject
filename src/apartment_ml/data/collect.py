@@ -75,13 +75,39 @@ class EcosBaseRateCollector:
         raise NotImplementedError("ECOS 수집은 feature/data 브랜치에서 구현 예정입니다.")
 
 
-def normalize_molit_api_frame(raw: pd.DataFrame) -> pd.DataFrame:
+def _cancelled_mask(df: pd.DataFrame) -> pd.Series:
+    """``cancel_type`` 에 값이 있으면 해제된 거래."""
+    return df["cancel_type"].astype("string").str.strip().fillna("").ne("")
+
+
+def _drop_cancelled_pairs(df: pd.DataFrame) -> pd.DataFrame:
+    """해제된 거래를 원본 행까지 함께 제거한다.
+
+    국토교통부 자료는 계약이 해제되면 원본 행을 그대로 남기고 해제 행을 한 줄 더 넣는다.
+    그래서 해제 행만 지우면 원본 행이 남아 깨진 계약이 정상 거래로 보인다.
+    같은 거래(자치구·계약일·면적·층·가격, 있으면 법정동·단지명까지)를 모두 지운다.
+    """
+    cancelled = _cancelled_mask(df)
+    if not cancelled.any():
+        return df
+    key_columns = [c for c in (*S.DUPLICATE_KEY, *S.DUPLICATE_KEY_OPTIONAL) if c in df.columns]
+    key = pd.MultiIndex.from_frame(df[key_columns].astype("string").fillna(""))
+    return df.loc[~key.isin(key[cancelled.to_numpy()])].copy()
+
+
+def normalize_molit_api_frame(raw: pd.DataFrame, *, drop_cancelled: bool = True) -> pd.DataFrame:
     """MOLIT OpenAPI 응답(DataFrame) → 내부 표준 컬럼.
 
     - 년/월/일을 ``contract_date`` 로 조합
     - 거래금액(만원, 쉼표 포함) → ``price_krw``(원)
     - 시군구코드 → 자치구명
-    - 해제(취소)된 거래는 제거 (cancel_type 값이 있는 행)
+
+    해제(취소)된 거래
+    ----------------
+    ``drop_cancelled=True`` (기본) 는 해제된 거래를 **원본 행까지 함께** 제거한다.
+    ``False`` 는 모두 남기므로 ``cancel_type`` 으로 해제 여부를 구분할 수 있다.
+    이상거래 레이블이 실제 해제와 얼마나 겹치는지 확인할 때 쓴다.
+
     타입 변환·유효성 검사는 ``preprocess.preprocess_transactions`` 에서 수행한다.
     """
     df = raw.rename(columns=S.MOLIT_API_COLUMN_MAP).copy()
@@ -90,10 +116,6 @@ def normalize_molit_api_frame(raw: pd.DataFrame) -> pd.DataFrame:
     if missing:
         raise ValueError(f"MOLIT 원본 컬럼이 없습니다: {missing}")
 
-    if "cancel_type" in df.columns:
-        cancelled = df["cancel_type"].astype("string").str.strip().fillna("").ne("")
-        df = df.loc[~cancelled].copy()
-
     y = df["deal_year"].astype("string").str.strip()
     m = df["deal_month"].astype("string").str.strip().str.zfill(2)
     d = df["deal_day"].astype("string").str.strip().str.zfill(2)
@@ -101,4 +123,8 @@ def normalize_molit_api_frame(raw: pd.DataFrame) -> pd.DataFrame:
     df[S.PRICE_KRW] = manwon_to_krw(df["deal_amount_manwon"])
     df[S.DISTRICT] = df["sgg_code"].astype("string").str.strip().map(SEOUL_LAWD_CODES)
     df[S.SOURCE] = "molit_api"
+
+    # 키에 계약일·가격이 들어가므로 파생 컬럼을 만든 뒤에 지운다.
+    if drop_cancelled and "cancel_type" in df.columns:
+        df = _drop_cancelled_pairs(df)
     return df
