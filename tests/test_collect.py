@@ -1,9 +1,50 @@
 """수집·정규화 테스트."""
 
+from datetime import date
+
 import pandas as pd
 import pytest
 
-from apartment_ml.data.collect import SEOUL_LAWD_CODES, normalize_molit_api_frame
+from apartment_ml.data import collect as C
+from apartment_ml.data.collect import (
+    SEOUL_LAWD_CODES,
+    CollectError,
+    EcosBaseRateCollector,
+    MolitApiCollector,
+    normalize_molit_api_frame,
+    parse_molit_xml,
+    to_base_rate_changes,
+)
+
+
+class FakeResponse:
+    """requests.get 대체용. 테스트는 네트워크를 쓰지 않는다 (conftest 가 차단)."""
+
+    def __init__(self, text: str = "", payload: object = None) -> None:
+        self.text = text
+        self.encoding = "utf-8"
+        self._payload = payload
+
+    def raise_for_status(self) -> None:
+        return None
+
+    def json(self) -> object:
+        return self._payload
+
+
+def molit_xml(count: int, total: int, *, start: int = 0) -> str:
+    items = "".join(
+        f"<item><aptNm>단지{i}</aptNm><dealAmount>125,000</dealAmount>"
+        f"<excluUseAr>84.97</excluUseAr><floor>{i % 20 + 1}</floor>"
+        f"<dealYear>2026</dealYear><dealMonth>4</dealMonth><dealDay>5</dealDay>"
+        f"<sggCd>11350</sggCd></item>"
+        for i in range(start, start + count)
+    )
+    return (
+        "<response><header><resultCode>000</resultCode><resultMsg>OK</resultMsg></header>"
+        f"<body><items>{items}</items><numOfRows>1000</numOfRows>"
+        f"<pageNo>1</pageNo><totalCount>{total}</totalCount></body></response>"
+    )
 
 
 def molit_rows(rows: list[dict]) -> pd.DataFrame:
@@ -85,3 +126,197 @@ def test_seoul_lawd_codes_cover_all_districts():
 
     assert len(SEOUL_LAWD_CODES) == len(S.SEOUL_DISTRICTS)
     assert set(SEOUL_LAWD_CODES.values()) == set(S.SEOUL_DISTRICTS)
+
+
+# ---------------------------------------------------------------------------
+# 응답 파싱
+# ---------------------------------------------------------------------------
+
+
+def test_parse_xml_reads_all_tags():
+    """필드 이름을 하드코딩하지 않으므로 item 안의 태그가 모두 들어온다."""
+    items, total = parse_molit_xml(molit_xml(2, 2))
+    assert total == 2
+    assert items[0]["aptNm"] == "단지0"
+    assert items[0]["excluUseAr"] == "84.97"
+
+
+def test_parse_xml_api_error_raises():
+    xml = (
+        "<response><header><resultCode>30</resultCode>"
+        "<resultMsg>SERVICE KEY IS NOT REGISTERED ERROR</resultMsg></header></response>"
+    )
+    with pytest.raises(CollectError, match="resultCode=30"):
+        parse_molit_xml(xml)
+
+
+def test_parse_html_error_page_raises():
+    """장애 시 HTML 이 오는데, 0건으로 넘기면 그 달이 조용히 비어버린다."""
+    with pytest.raises(CollectError, match="응답 형식이 다릅니다"):
+        parse_molit_xml("<html><body>502 Bad Gateway</body></html>")
+
+
+def test_parse_non_xml_raises():
+    with pytest.raises(CollectError, match="XML 이 아닌 응답"):
+        parse_molit_xml("not xml at all {")
+
+
+# ---------------------------------------------------------------------------
+# 국토교통부 수집기
+# ---------------------------------------------------------------------------
+
+
+def test_molit_requires_key():
+    with pytest.raises(ValueError, match="API 키가 비어 있습니다"):
+        MolitApiCollector("   ")
+
+
+@pytest.mark.parametrize(
+    ("lawd_code", "year_month", "match"),
+    [
+        ("99999", "202604", "서울 자치구 코드가 아닙니다"),
+        ("11350", "2026-04", "YYYYMM"),
+        ("11350", "20264", "YYYYMM"),
+    ],
+)
+def test_molit_rejects_bad_arguments(lawd_code, year_month, match):
+    with pytest.raises(ValueError, match=match):
+        MolitApiCollector("KEY").fetch(lawd_code, year_month)
+
+
+def test_molit_paginates(monkeypatch):
+    """1000건을 넘으면 다음 페이지까지 받는다 (노원구 2026-04 가 1042건이었다)."""
+    pages: list[int] = []
+
+    def fake_get(url, params=None, timeout=None):
+        page = params["pageNo"]
+        pages.append(page)
+        count = 1000 if page == 1 else 42
+        return FakeResponse(molit_xml(count, 1042, start=(page - 1) * 1000))
+
+    monkeypatch.setattr(C.requests, "get", fake_get)
+    df = MolitApiCollector("KEY", sleep_seconds=0).fetch("11350", "202604")
+    assert len(df) == 1042
+    assert pages == [1, 2]
+
+
+def test_molit_single_page_does_not_request_more(monkeypatch):
+    pages: list[int] = []
+
+    def fake_get(url, params=None, timeout=None):
+        pages.append(params["pageNo"])
+        return FakeResponse(molit_xml(55, 55))
+
+    monkeypatch.setattr(C.requests, "get", fake_get)
+    df = MolitApiCollector("KEY", sleep_seconds=0).fetch("11350", "202604")
+    assert len(df) == 55
+    assert pages == [1]
+
+
+def test_molit_api_error_is_not_retried(monkeypatch):
+    """키 오류는 다시 요청해도 같은 결과이므로 바로 올린다."""
+    calls = []
+
+    def fake_get(url, params=None, timeout=None):
+        calls.append(1)
+        return FakeResponse(
+            "<response><header><resultCode>30</resultCode>"
+            "<resultMsg>KEY ERROR</resultMsg></header></response>"
+        )
+
+    monkeypatch.setattr(C.requests, "get", fake_get)
+    with pytest.raises(CollectError, match="resultCode=30"):
+        MolitApiCollector("KEY", sleep_seconds=0).fetch("11350", "202604")
+    assert len(calls) == 1
+
+
+def test_molit_network_error_is_retried(monkeypatch):
+    calls = []
+
+    def fake_get(url, params=None, timeout=None):
+        calls.append(1)
+        raise OSError("connection reset")
+
+    monkeypatch.setattr(C.requests, "get", fake_get)
+    with pytest.raises(CollectError, match="수집 실패"):
+        MolitApiCollector("KEY", max_retries=2, sleep_seconds=0).fetch("11350", "202604")
+    assert len(calls) == 2
+
+
+# ---------------------------------------------------------------------------
+# 기준금리 수집기
+# ---------------------------------------------------------------------------
+
+
+def test_base_rate_keeps_only_change_days():
+    """일별로 받아 값이 바뀐 날만 남긴다. 그래야 실제 적용일을 쓸 수 있다."""
+    rows = [
+        {"TIME": "20210801", "DATA_VALUE": "0.5"},
+        {"TIME": "20210825", "DATA_VALUE": "0.5"},
+        {"TIME": "20210826", "DATA_VALUE": "0.75"},  # 금통위 인상
+        {"TIME": "20210901", "DATA_VALUE": "0.75"},
+        {"TIME": "20211125", "DATA_VALUE": "1.0"},
+    ]
+    out = to_base_rate_changes(rows)
+    assert out["base_rate"].tolist() == [0.5, 0.75, 1.0]
+    assert out["effective_date"].dt.strftime("%Y-%m-%d").tolist() == [
+        "2021-08-01",
+        "2021-08-26",
+        "2021-11-25",
+    ]
+
+
+def test_base_rate_skips_blank_values():
+    rows = [
+        {"TIME": "20210801", "DATA_VALUE": "0.5"},
+        {"TIME": "20210802", "DATA_VALUE": ""},
+        {"TIME": "20210803", "DATA_VALUE": None},
+        {"TIME": "20210826", "DATA_VALUE": "0.75"},
+    ]
+    out = to_base_rate_changes(rows)
+    assert len(out) == 2
+
+
+def test_base_rate_all_blank_raises():
+    with pytest.raises(CollectError, match="값이 있는 날이 없습니다"):
+        to_base_rate_changes([{"TIME": "20210801", "DATA_VALUE": ""}])
+
+
+def test_ecos_requires_key():
+    with pytest.raises(ValueError, match="ECOS API 키가 비어 있습니다"):
+        EcosBaseRateCollector("")
+
+
+def test_ecos_rejects_reversed_period():
+    with pytest.raises(ValueError, match="start 가 end 보다 늦습니다"):
+        EcosBaseRateCollector("KEY").fetch(date(2026, 1, 1), date(2025, 1, 1))
+
+
+def test_ecos_fetch(monkeypatch):
+    payload = {
+        "StatisticSearch": {
+            "list_total_count": 3,
+            "row": [
+                {"TIME": "20210101", "DATA_VALUE": "0.5", "UNIT_NAME": "연%"},
+                {"TIME": "20210826", "DATA_VALUE": "0.75", "UNIT_NAME": "연%"},
+            ],
+        }
+    }
+    monkeypatch.setattr(C.requests, "get", lambda *a, **k: FakeResponse(payload=payload))
+    out = EcosBaseRateCollector("KEY").fetch(date(2021, 1, 1), date(2021, 12, 31))
+    assert list(out.columns) == ["effective_date", "base_rate"]
+    assert out["base_rate"].tolist() == [0.5, 0.75]
+
+
+def test_ecos_auth_error_raises(monkeypatch):
+    payload = {"RESULT": {"CODE": "INFO-100", "MESSAGE": "인증키가 유효하지 않습니다."}}
+    monkeypatch.setattr(C.requests, "get", lambda *a, **k: FakeResponse(payload=payload))
+    with pytest.raises(CollectError, match="INFO-100"):
+        EcosBaseRateCollector("KEY").fetch(date(2021, 1, 1), date(2021, 12, 31))
+
+
+def test_ecos_empty_result_raises(monkeypatch):
+    payload = {"StatisticSearch": {"row": []}}
+    monkeypatch.setattr(C.requests, "get", lambda *a, **k: FakeResponse(payload=payload))
+    with pytest.raises(CollectError, match="받은 기준금리가 없습니다"):
+        EcosBaseRateCollector("KEY").fetch(date(2021, 1, 1), date(2021, 12, 31))

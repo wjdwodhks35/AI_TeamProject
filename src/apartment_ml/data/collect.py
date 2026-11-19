@@ -12,13 +12,22 @@ Phase 0 범위: 수집기 **계약(인터페이스)** 과 원본 → 내부 컬�
 
 from __future__ import annotations
 
+import time
+import xml.etree.ElementTree as ET
 from datetime import date
-from typing import Protocol, runtime_checkable
+from typing import Any, Protocol, runtime_checkable
+from urllib.parse import quote
 
 import pandas as pd
+import requests
 
 from apartment_ml import schemas as S
 from apartment_ml.data.preprocess import manwon_to_krw
+
+
+class CollectError(RuntimeError):
+    """외부 API 응답이 비정상일 때."""
+
 
 # 국토교통부 API 의 지역코드(LAWD_CD, 시군구 5자리) — 서울 25개 자치구
 SEOUL_LAWD_CODES: dict[str, str] = {
@@ -55,24 +64,193 @@ class RegulationCollector(Protocol):
     def fetch(self) -> pd.DataFrame: ...
 
 
-class MolitApiCollector:
-    """국토교통부 아파트 매매 실거래가 API 수집기 (미구현 — feature/data 담당)."""
+def parse_molit_xml(xml_text: str) -> tuple[list[dict[str, str]], int]:
+    """응답 XML 에서 거래 목록과 전체 건수를 뽑는다.
 
-    def __init__(self, api_key: str) -> None:
-        self.api_key = api_key
+    필드 이름을 하드코딩하지 않고 ``item`` 안의 태그를 모두 가져온다.
+    국토교통부가 항목을 추가해도 수집 코드를 고치지 않아도 되고,
+    이름을 잘못 적어서 특정 칸이 조용히 비는 일도 없다.
+    """
+    try:
+        root = ET.fromstring(xml_text)
+    except ET.ParseError as exc:
+        raise CollectError(f"XML 이 아닌 응답: {xml_text[:200]}") from exc
+
+    code = root.findtext(".//resultCode")
+    if code is not None and code.strip() not in ("00", "000"):
+        message = (root.findtext(".//resultMsg") or "").strip()
+        raise CollectError(f"국토교통부 API 오류 resultCode={code.strip()} {message}")
+
+    items: list[dict[str, str]] = []
+    for item in root.iter("item"):
+        row = {child.tag: (child.text or "").strip() for child in item}
+        if row:
+            items.append(row)
+
+    # 공공데이터포털은 장애 시 XML 대신 HTML 오류 페이지를 돌려줄 때가 있다.
+    # 그대로 0건으로 넘기면 그 달이 조용히 비어버리므로 여기서 걸러낸다.
+    if code is None and not items:
+        raise CollectError(f"응답 형식이 다릅니다: {xml_text[:200]}")
+
+    total = (root.findtext(".//totalCount") or "").strip()
+    return items, int(total) if total.isdigit() else len(items)
+
+
+class MolitApiCollector:
+    """국토교통부 아파트 매매 실거래가 상세 자료 수집기.
+
+    ``api_key`` 는 공공데이터포털의 **디코딩 키**를 넣는다. requests 가 쿼리
+    문자열을 인코딩하므로 인코딩 키를 넣으면 두 번 인코딩되어 인증에 실패한다.
+
+    한 번 호출로 한 자치구의 한 달을 받는다. 전체 기간 수집과 파일 저장은
+    ``scripts/collect_molit.py`` 가 담당한다.
+    """
+
+    BASE_URL = "https://apis.data.go.kr/1613000/RTMSDataSvcAptTradeDev/getRTMSDataSvcAptTradeDev"
+
+    def __init__(
+        self,
+        api_key: str,
+        *,
+        rows_per_page: int = 1000,
+        timeout: float = 20.0,
+        max_retries: int = 3,
+        sleep_seconds: float = 0.15,
+    ) -> None:
+        if not api_key or not api_key.strip():
+            raise ValueError("국토교통부 API 키가 비어 있습니다.")
+        self.api_key = api_key.strip()
+        self.rows_per_page = rows_per_page
+        self.timeout = timeout
+        self.max_retries = max_retries
+        self.sleep_seconds = sleep_seconds
 
     def fetch(self, lawd_code: str, year_month: str) -> pd.DataFrame:
-        raise NotImplementedError("MOLIT API 수집은 feature/data 브랜치에서 구현 예정입니다.")
+        """lawd_code: 시군구 5자리, year_month: 'YYYYMM'. 원본 컬럼 그대로 반환."""
+        if lawd_code not in SEOUL_LAWD_CODES:
+            raise ValueError(f"서울 자치구 코드가 아닙니다: {lawd_code!r}")
+        if not (len(year_month) == 6 and year_month.isdigit()):
+            raise ValueError(f"year_month 는 'YYYYMM' 형식이어야 합니다: {year_month!r}")
+
+        items, total = self._request(lawd_code, year_month, page=1)
+        page = 1
+        while len(items) < total:
+            page += 1
+            time.sleep(self.sleep_seconds)
+            more, _ = self._request(lawd_code, year_month, page=page)
+            if not more:
+                break
+            items.extend(more)
+        return pd.DataFrame(items)
+
+    def _request(
+        self, lawd_code: str, year_month: str, page: int
+    ) -> tuple[list[dict[str, str]], int]:
+        params = {
+            "serviceKey": self.api_key,
+            "LAWD_CD": lawd_code,
+            "DEAL_YMD": year_month,
+            "pageNo": page,
+            "numOfRows": self.rows_per_page,
+        }
+        last_error: Exception | None = None
+        for attempt in range(self.max_retries):
+            try:
+                response = requests.get(self.BASE_URL, params=params, timeout=self.timeout)
+                response.raise_for_status()
+                response.encoding = "utf-8"
+                return parse_molit_xml(response.text)
+            except CollectError:
+                raise  # 키·한도 문제는 다시 요청해도 같은 결과다
+            except Exception as exc:  # noqa: BLE001 - 네트워크 오류는 재시도 대상
+                last_error = exc
+                time.sleep(self.sleep_seconds * (attempt + 1) * 10)
+        raise CollectError(f"{lawd_code} {year_month} 수집 실패: {last_error}")
 
 
 class EcosBaseRateCollector:
-    """한국은행 ECOS 기준금리 수집기 (미구현 — feature/data 담당)."""
+    """한국은행 ECOS 기준금리 수집기.
 
-    def __init__(self, api_key: str) -> None:
-        self.api_key = api_key
+    기준금리는 금융통화위원회 결정일에 바뀌므로 **일별로 받아 값이 바뀐 날만** 남긴다.
+    월별로 받으면 실제 적용일을 알 수 없어, 계약일 시점의 금리를 붙이는
+    ``merge.attach_base_rate`` 의 시점 정합이 한 달 단위로 거칠어진다.
+    """
+
+    BASE_URL = "https://ecos.bok.or.kr/api"
+    STAT_CODE = "722Y001"  # 한국은행 기준금리 및 여수신금리
+    ITEM_CODE = "0101000"  # 한국은행 기준금리
+
+    def __init__(self, api_key: str, *, timeout: float = 30.0, max_retries: int = 3) -> None:
+        if not api_key or not api_key.strip():
+            raise ValueError("ECOS API 키가 비어 있습니다.")
+        self.api_key = api_key.strip()
+        self.timeout = timeout
+        self.max_retries = max_retries
 
     def fetch(self, start: date, end: date) -> pd.DataFrame:
-        raise NotImplementedError("ECOS 수집은 feature/data 브랜치에서 구현 예정입니다.")
+        """``effective_date``(적용일), ``base_rate``(%) 두 컬럼. 값이 바뀐 날만 남긴다."""
+        if start > end:
+            raise ValueError(f"start 가 end 보다 늦습니다: {start} > {end}")
+        rows = self._request(start.strftime("%Y%m%d"), end.strftime("%Y%m%d"))
+        if not rows:
+            raise CollectError(f"ECOS 에서 받은 기준금리가 없습니다: {start} ~ {end}")
+        return to_base_rate_changes(rows)
+
+    def _request(self, start: str, end: str) -> list[dict[str, Any]]:
+        url = "/".join(
+            [
+                self.BASE_URL,
+                "StatisticSearch",
+                quote(self.api_key),
+                "json",
+                "kr",
+                "1",
+                "100000",
+                self.STAT_CODE,
+                "D",
+                start,
+                end,
+                self.ITEM_CODE,
+            ]
+        )
+        last_error: Exception | None = None
+        for attempt in range(self.max_retries):
+            try:
+                response = requests.get(url, timeout=self.timeout)
+                response.raise_for_status()
+                payload = response.json()
+                break
+            except Exception as exc:  # noqa: BLE001 - 네트워크 오류는 재시도 대상
+                last_error = exc
+                time.sleep(1.5 * (attempt + 1))
+        else:
+            raise CollectError(f"ECOS 요청 실패: {last_error}")
+
+        if "RESULT" in payload:  # 인증키 오류 등
+            result = payload["RESULT"]
+            raise CollectError(f"ECOS 오류 {result.get('CODE')}: {result.get('MESSAGE')}")
+        if "StatisticSearch" not in payload:
+            raise CollectError(f"예상과 다른 ECOS 응답: {str(payload)[:200]}")
+        return payload["StatisticSearch"].get("row", [])
+
+
+def to_base_rate_changes(rows: list[dict[str, Any]]) -> pd.DataFrame:
+    """ECOS 일별 응답 → 금리가 바뀐 날만 담은 (effective_date, base_rate) 표."""
+    records = []
+    for row in rows:
+        value = row.get("DATA_VALUE")
+        when = row.get("TIME")
+        if value in (None, "") or when in (None, ""):
+            continue
+        records.append({"effective_date": str(when), "base_rate": float(value)})
+    if not records:
+        raise CollectError("ECOS 응답에 값이 있는 날이 없습니다.")
+
+    df = pd.DataFrame(records)
+    df["effective_date"] = pd.to_datetime(df["effective_date"], format="%Y%m%d")
+    df = df.sort_values("effective_date").reset_index(drop=True)
+    changed = df["base_rate"].ne(df["base_rate"].shift())  # 첫 행은 NaN 과 비교되어 True
+    return df.loc[changed].reset_index(drop=True)
 
 
 def _cancelled_mask(df: pd.DataFrame) -> pd.Series:
