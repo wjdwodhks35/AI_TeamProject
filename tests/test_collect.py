@@ -5,6 +5,7 @@ from datetime import date
 import pandas as pd
 import pytest
 
+from apartment_ml import schemas as S
 from apartment_ml.data import collect as C
 from apartment_ml.data.collect import (
     SEOUL_LAWD_CODES,
@@ -122,8 +123,6 @@ def test_same_complex_different_price_is_not_a_pair():
 
 
 def test_seoul_lawd_codes_cover_all_districts():
-    from apartment_ml import schemas as S
-
     assert len(SEOUL_LAWD_CODES) == len(S.SEOUL_DISTRICTS)
     assert set(SEOUL_LAWD_CODES.values()) == set(S.SEOUL_DISTRICTS)
 
@@ -320,3 +319,133 @@ def test_ecos_empty_result_raises(monkeypatch):
     monkeypatch.setattr(C.requests, "get", lambda *a, **k: FakeResponse(payload=payload))
     with pytest.raises(CollectError, match="받은 기준금리가 없습니다"):
         EcosBaseRateCollector("KEY").fetch(date(2021, 1, 1), date(2021, 12, 31))
+
+
+# ---------------------------------------------------------------------------
+# 규제 이력
+# ---------------------------------------------------------------------------
+
+EVENTS_HEADER = "effective_date,districts,regulation_type,value,description,source\n"
+
+
+def write_events(tmp_path, body: str):
+    path = tmp_path / "regulation_events.csv"
+    path.write_text(EVENTS_HEADER + body, encoding="utf-8")
+    return path
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("ALL", 25),
+        ("강남구|송파구", 2),
+        ("EXCEPT:강남구|서초구|송파구|용산구", 21),
+    ],
+)
+def test_parse_districts(text, expected):
+    assert len(C.parse_districts(text)) == expected
+
+
+def test_parse_districts_except_excludes_named():
+    out = C.parse_districts("EXCEPT:강남구|서초구|송파구|용산구")
+    assert "강남구" not in out
+    assert "노원구" in out
+
+
+@pytest.mark.parametrize("text", ["", "   ", "강남군", "ALL|강남구"])
+def test_parse_districts_invalid(text):
+    with pytest.raises(ValueError):
+        C.parse_districts(text)
+
+
+def test_load_events_skips_record_only_rows(tmp_path):
+    """regulation_type 이 빈 줄은 근거 기록용이므로 계산에서 빠진다."""
+    path = write_events(
+        tmp_path,
+        "2021-01-01,ALL,reg_adjustment_target,1,조정대상지역,국토부\n"
+        "2022-07-01,ALL,,,DSR 3단계 — 전국 공통,금융위\n",
+    )
+    events = C.load_regulation_events(path)
+    assert len(events) == 1
+    assert events.iloc[0]["regulation_type"] == "reg_adjustment_target"
+
+
+def test_load_events_unknown_type_raises(tmp_path):
+    path = write_events(tmp_path, "2021-01-01,ALL,reg_made_up,1,없는 규제,출처\n")
+    with pytest.raises(ValueError, match="알 수 없는 regulation_type"):
+        C.load_regulation_events(path)
+
+
+def test_load_events_missing_column_raises(tmp_path):
+    path = tmp_path / "bad.csv"
+    path.write_text("effective_date,districts\n2021-01-01,ALL\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="컬럼이 없습니다"):
+        C.load_regulation_events(path)
+
+
+def test_history_builds_open_interval(tmp_path):
+    """해제 이벤트가 없으면 현재까지 유효한 구간이 된다."""
+    path = write_events(tmp_path, "2021-01-01,강남구,reg_land_permit,1,지정,서울시\n")
+    history = C.RegulationCsvCollector(path).fetch()
+    row = history[history["district"] == "강남구"].iloc[0]
+    assert row["effective_from"] == pd.Timestamp("2021-01-01")
+    assert pd.isna(row["effective_to"])
+    assert len(history) == 1  # 지정되지 않은 구는 행이 생기지 않는다
+
+
+def test_history_splits_on_release_and_redesignation(tmp_path):
+    """해제 뒤 재지정되면 두 구간으로 나뉜다 (강남구 토지거래허가구역)."""
+    path = write_events(
+        tmp_path,
+        "2021-01-01,강남구,reg_land_permit,1,지정,서울시\n"
+        "2025-02-13,강남구,reg_land_permit,0,해제,서울시\n"
+        "2025-03-19,강남구,reg_land_permit,1,재지정,서울시\n",
+    )
+    history = C.RegulationCsvCollector(path).fetch()
+    assert len(history) == 2
+    first, second = history.iloc[0], history.iloc[1]
+    assert first["effective_to"] == pd.Timestamp("2025-02-13")
+    assert second["effective_from"] == pd.Timestamp("2025-03-19")
+    assert pd.isna(second["effective_to"])
+
+
+def test_history_except_leaves_named_districts_untouched(tmp_path):
+    """EXCEPT 해제는 열거된 구의 구간을 끊지 않는다."""
+    path = write_events(
+        tmp_path,
+        "2021-01-01,ALL,reg_adjustment_target,1,전역 지정,국토부\n"
+        "2023-01-05,EXCEPT:강남구,reg_adjustment_target,0,강남 제외 해제,국토부\n",
+    )
+    history = C.RegulationCsvCollector(path).fetch()
+    강남 = history[history["district"] == "강남구"]
+    노원 = history[history["district"] == "노원구"]
+    assert len(강남) == 1 and pd.isna(강남.iloc[0]["effective_to"])
+    assert len(노원) == 1 and 노원.iloc[0]["effective_to"] == pd.Timestamp("2023-01-05")
+
+
+def test_history_feeds_attach_regulation(tmp_path):
+    """만든 이력이 merge.attach_regulation 에 그대로 들어간다."""
+    from apartment_ml.data.merge import attach_regulation
+
+    path = write_events(
+        tmp_path,
+        "2021-01-01,강남구,reg_land_permit,1,지정,서울시\n"
+        "2025-02-13,강남구,reg_land_permit,0,해제,서울시\n",
+    )
+    history = C.RegulationCsvCollector(path).fetch()
+    transactions = pd.DataFrame(
+        {
+            "district": ["강남구", "강남구", "노원구"],
+            "contract_date": ["2024-06-01", "2025-06-01", "2024-06-01"],
+        }
+    )
+    out = attach_regulation(transactions, history)
+    assert out["reg_land_permit"].tolist() == [1, 0, 0]
+
+
+def test_real_events_file_is_loadable():
+    """저장소에 든 실제 규제 파일이 깨지지 않았는지 확인한다."""
+    history = C.RegulationCsvCollector(C.REGULATION_EVENTS_PATH).fetch()
+    assert len(history) > 0
+    assert set(history["regulation_type"]) <= set(S.REGULATION_COLUMNS)
+    assert (history["effective_from"].notna()).all()

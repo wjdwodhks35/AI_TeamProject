@@ -15,6 +15,7 @@ from __future__ import annotations
 import time
 import xml.etree.ElementTree as ET
 from datetime import date
+from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
 from urllib.parse import quote
 
@@ -22,6 +23,7 @@ import pandas as pd
 import requests
 
 from apartment_ml import schemas as S
+from apartment_ml.data.merge import REGULATION_HISTORY_COLUMNS
 from apartment_ml.data.preprocess import manwon_to_krw
 
 
@@ -306,3 +308,127 @@ def normalize_molit_api_frame(raw: pd.DataFrame, *, drop_cancelled: bool = True)
     if drop_cancelled and "cancel_type" in df.columns:
         df = _drop_cancelled_pairs(df)
     return df
+
+
+# ---------------------------------------------------------------------------
+# 규제 이력
+# ---------------------------------------------------------------------------
+# 규제는 공개 API 가 없어서 고시를 직접 찾아 ``configs/regulation_events.csv`` 에 적는다.
+# 그 파일의 한 줄은 "이 날부터 이 지역의 이 규제가 이 값이 된다" 는 뜻이고,
+# 여기서 ``merge.attach_regulation`` 이 받는 기간 테이블로 바꾼다.
+
+REGULATION_EVENTS_PATH = Path("configs/regulation_events.csv")
+REGULATION_EVENT_COLUMNS = (
+    "effective_date",
+    "districts",
+    "regulation_type",
+    "value",
+    "description",
+    "source",
+)
+DISTRICTS_ALL = "ALL"
+DISTRICTS_EXCEPT = "EXCEPT:"
+
+
+def parse_districts(text: str) -> list[str]:
+    """``districts`` 칸을 자치구 목록으로 바꾼다.
+
+    - ``ALL``                      서울 25개 구 전체
+    - ``강남구|송파구``             열거한 구만
+    - ``EXCEPT:강남구|서초구``      열거한 구만 빼고 전체
+    """
+    text = (text or "").strip()
+    if not text:
+        raise ValueError("districts 칸이 비어 있습니다.")
+    if text == DISTRICTS_ALL:
+        return list(S.SEOUL_DISTRICTS)
+
+    inverted = text.startswith(DISTRICTS_EXCEPT)
+    if inverted:
+        text = text[len(DISTRICTS_EXCEPT) :]
+    names = [n.strip() for n in text.split("|") if n.strip()]
+    unknown = [n for n in names if n not in S.SEOUL_DISTRICTS]
+    if unknown:
+        raise ValueError(f"서울 자치구가 아닙니다: {unknown}")
+    if inverted:
+        return [d for d in S.SEOUL_DISTRICTS if d not in names]
+    return names
+
+
+def load_regulation_events(path: str | Path = REGULATION_EVENTS_PATH) -> pd.DataFrame:
+    """규제 이벤트 CSV 를 읽는다.
+
+    ``regulation_type`` 이 빈 줄은 근거 기록용이다. 전국 공통 규제(DSR, 대출 한도 등)는
+    자치구별로 값이 다르지 않아 현재 스키마의 규제 컬럼으로 표현할 수 없으므로,
+    파일에는 남겨 두고 계산에서는 건너뛴다.
+    """
+    events = pd.read_csv(path, dtype=str, encoding="utf-8-sig").fillna("")
+    missing = [c for c in REGULATION_EVENT_COLUMNS if c not in events.columns]
+    if missing:
+        raise ValueError(f"규제 이벤트 파일에 컬럼이 없습니다: {missing}")
+
+    used = events.loc[events["regulation_type"].str.strip() != ""].copy()
+    unknown = set(used["regulation_type"].str.strip()) - set(S.REGULATION_COLUMNS)
+    if unknown:
+        raise ValueError(f"알 수 없는 regulation_type: {sorted(unknown)}")
+
+    used["effective_date"] = pd.to_datetime(used["effective_date"], format="%Y-%m-%d")
+    used["value"] = used["value"].astype(int)
+    if not used["value"].isin((0, 1)).all():
+        raise ValueError("value 는 0 또는 1 이어야 합니다.")
+    return used.sort_values("effective_date").reset_index(drop=True)
+
+
+def to_regulation_history(events: pd.DataFrame) -> pd.DataFrame:
+    """규제 이벤트 → ``merge.REGULATION_HISTORY_COLUMNS`` 기간 테이블.
+
+    자치구·규제별로 값이 1이 되는 날부터 0이 되는 날까지를 한 구간으로 만든다.
+    끝까지 1이면 ``effective_to`` 를 비워 현재까지 유효한 것으로 둔다.
+    """
+    rows: list[dict[str, object]] = []
+    for regulation in sorted(set(events["regulation_type"])):
+        same = events.loc[events["regulation_type"] == regulation]
+        for district in S.SEOUL_DISTRICTS:
+            applies = [
+                (e["effective_date"], e["value"])
+                for _, e in same.iterrows()
+                if district in parse_districts(e["districts"])
+            ]
+            active = 0
+            began: pd.Timestamp | None = None
+            for when, value in applies:
+                if value == 1 and active == 0:
+                    began = when
+                elif value == 0 and active == 1:
+                    rows.append(
+                        {
+                            S.DISTRICT: district,
+                            "regulation_type": regulation,
+                            "announced_date": pd.NaT,
+                            "effective_from": began,
+                            "effective_to": when,
+                        }
+                    )
+                    began = None
+                active = value
+            if active == 1 and began is not None:
+                rows.append(
+                    {
+                        S.DISTRICT: district,
+                        "regulation_type": regulation,
+                        "announced_date": pd.NaT,
+                        "effective_from": began,
+                        "effective_to": pd.NaT,
+                    }
+                )
+    return pd.DataFrame(rows, columns=list(REGULATION_HISTORY_COLUMNS))
+
+
+class RegulationCsvCollector:
+    """``RegulationCollector`` 계약 구현. 이벤트 CSV 를 기간 테이블로 바꿔 돌려준다."""
+
+    def __init__(self, path: str | Path = REGULATION_EVENTS_PATH) -> None:
+        self.path = Path(path)
+
+    def fetch(self) -> pd.DataFrame:
+        return to_regulation_history(load_regulation_events(self.path))
