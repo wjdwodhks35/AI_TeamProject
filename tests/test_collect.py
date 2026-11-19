@@ -449,3 +449,42 @@ def test_real_events_file_is_loadable():
     assert len(history) > 0
     assert set(history["regulation_type"]) <= set(S.REGULATION_COLUMNS)
     assert (history["effective_from"].notna()).all()
+
+
+# ---------------------------------------------------------------------------
+# 수집 범위·경로
+# ---------------------------------------------------------------------------
+
+
+def test_month_range_inclusive():
+    assert C.month_range("202101", "202103") == ["202101", "202102", "202103"]
+    assert C.month_range("202612", "202612") == ["202612"]
+
+
+def test_month_range_crosses_year():
+    out = C.month_range("202211", "202302")
+    assert out == ["202211", "202212", "202301", "202302"]
+
+
+def test_month_range_full_period():
+    """2021-01 ~ 2026-08 은 68개월이고 25개 구를 곱하면 1,700회다."""
+    assert len(C.month_range("202101", "202608")) == 68
+
+
+@pytest.mark.parametrize(
+    ("start", "end"),
+    [("2021-01", "202608"), ("20211", "202608"), ("202608", "202101")],
+)
+def test_month_range_invalid(start, end):
+    with pytest.raises(ValueError):
+        C.month_range(start, end)
+
+
+def test_raw_month_path():
+    path = C.raw_month_path("data/raw", "11350", "202604")
+    assert path.parts[-2:] == ("11350_노원구", "202604.json")
+
+
+def test_raw_month_path_unknown_code():
+    with pytest.raises(ValueError, match="서울 자치구 코드가 아닙니다"):
+        C.raw_month_path("data/raw", "41135", "202604")

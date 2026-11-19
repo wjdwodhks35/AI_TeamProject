@@ -66,6 +66,33 @@ class RegulationCollector(Protocol):
     def fetch(self) -> pd.DataFrame: ...
 
 
+def month_range(start: str, end: str) -> list[str]:
+    """'202101', '202608' -> ['202101', '202102', ...]. 양쪽 끝을 포함한다."""
+    for label, value in (("start", start), ("end", end)):
+        if not (len(value) == 6 and value.isdigit()):
+            raise ValueError(f"{label} 는 'YYYYMM' 형식이어야 합니다: {value!r}")
+    if start > end:
+        raise ValueError(f"start 가 end 보다 늦습니다: {start} > {end}")
+
+    year, month = int(start[:4]), int(start[4:])
+    end_year, end_month = int(end[:4]), int(end[4:])
+    months: list[str] = []
+    while (year, month) <= (end_year, end_month):
+        months.append(f"{year}{month:02d}")
+        month += 1
+        if month == 13:
+            year, month = year + 1, 1
+    return months
+
+
+def raw_month_path(raw_dir: str | Path, lawd_code: str, year_month: str) -> Path:
+    """수집 결과를 저장할 경로. 자치구별 폴더 아래 한 달에 한 파일."""
+    if lawd_code not in SEOUL_LAWD_CODES:
+        raise ValueError(f"서울 자치구 코드가 아닙니다: {lawd_code!r}")
+    folder = f"{lawd_code}_{SEOUL_LAWD_CODES[lawd_code]}"
+    return Path(raw_dir) / folder / f"{year_month}.json"
+
+
 def parse_molit_xml(xml_text: str) -> tuple[list[dict[str, str]], int]:
     """응답 XML 에서 거래 목록과 전체 건수를 뽑는다.
 
