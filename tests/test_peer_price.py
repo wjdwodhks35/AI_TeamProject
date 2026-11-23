@@ -196,17 +196,18 @@ def labelled_frame() -> pd.DataFrame:
     )
 
 
-def test_label_flags_only_cheap_deals_by_default():
-    """기본값은 기준가보다 싼 쪽만 본다. 비싼 쪽에는 신호가 없었다."""
+def test_label_flags_both_directions_by_default():
+    """기본값은 기준가에서 양쪽으로 벗어난 거래를 모두 본다."""
     out = label_anomalies(labelled_frame())
 
-    assert list(out[S.ANOMALY_LABEL]) == [1, 0, 0, 0]
-
-
-def test_label_both_directions_when_asked():
-    out = label_anomalies(labelled_frame(), direction="both")
-
     assert list(out[S.ANOMALY_LABEL]) == [1, 0, 0, 1]
+
+
+def test_label_cheap_only_when_asked():
+    """direction=below 는 싼 쪽만 본다. 두 방향은 성격이 달라 비교용으로 쓴다."""
+    out = label_anomalies(labelled_frame(), direction="below")
+
+    assert list(out[S.ANOMALY_LABEL]) == [1, 0, 0, 0]
 
 
 def test_label_rejects_unknown_direction():
