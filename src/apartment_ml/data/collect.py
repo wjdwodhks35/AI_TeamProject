@@ -12,6 +12,7 @@ Phase 0 범위: 수집기 **계약(인터페이스)** 과 원본 → 내부 컬�
 
 from __future__ import annotations
 
+import json
 import time
 import xml.etree.ElementTree as ET
 from datetime import date
@@ -382,12 +383,20 @@ def parse_districts(text: str) -> list[str]:
     return names
 
 
+KNOWN_REGULATION_TYPES: frozenset[str] = frozenset(
+    (*S.REGULATION_COLUMNS, *S.NATIONAL_REGULATION_COLUMNS)
+)
+
+
 def load_regulation_events(path: str | Path = REGULATION_EVENTS_PATH) -> pd.DataFrame:
     """규제 이벤트 CSV 를 읽는다.
 
-    ``regulation_type`` 이 빈 줄은 근거 기록용이다. 전국 공통 규제(DSR, 대출 한도 등)는
-    자치구별로 값이 다르지 않아 현재 스키마의 규제 컬럼으로 표현할 수 없으므로,
+    ``regulation_type`` 이 빈 줄은 근거 기록용이다. 상태로 표현할 수 없는 발표
+    (총량규제 강화, 세제개편 방향 등) 와 서울에 영향이 없는 지방 해제가 그렇다.
     파일에는 남겨 두고 계산에서는 건너뛴다.
+
+    값의 범위가 규제마다 다르다. 자치구별 규제는 0/1 이지만, DSR 은 단계(0~3),
+    주담대 한도는 억 단위 금액이다. 그래서 0/1 검사는 자치구별 규제에만 적용한다.
     """
     events = pd.read_csv(path, dtype=str, encoding="utf-8-sig").fillna("")
     missing = [c for c in REGULATION_EVENT_COLUMNS if c not in events.columns]
@@ -395,14 +404,19 @@ def load_regulation_events(path: str | Path = REGULATION_EVENTS_PATH) -> pd.Data
         raise ValueError(f"규제 이벤트 파일에 컬럼이 없습니다: {missing}")
 
     used = events.loc[events["regulation_type"].str.strip() != ""].copy()
-    unknown = set(used["regulation_type"].str.strip()) - set(S.REGULATION_COLUMNS)
+    used["regulation_type"] = used["regulation_type"].str.strip()
+    unknown = set(used["regulation_type"]) - KNOWN_REGULATION_TYPES
     if unknown:
         raise ValueError(f"알 수 없는 regulation_type: {sorted(unknown)}")
 
     used["effective_date"] = pd.to_datetime(used["effective_date"], format="%Y-%m-%d")
     used["value"] = used["value"].astype(int)
-    if not used["value"].isin((0, 1)).all():
-        raise ValueError("value 는 0 또는 1 이어야 합니다.")
+
+    by_district = used["regulation_type"].isin(S.REGULATION_COLUMNS)
+    if not used.loc[by_district, "value"].isin((0, 1)).all():
+        raise ValueError(f"{sorted(S.REGULATION_COLUMNS)} 의 value 는 0 또는 1 이어야 합니다.")
+    if (used.loc[~by_district, "value"] < 0).any():
+        raise ValueError("전국 공통 규제의 value 는 음수가 될 수 없습니다.")
     return used.sort_values("effective_date").reset_index(drop=True)
 
 
@@ -413,8 +427,9 @@ def to_regulation_history(events: pd.DataFrame) -> pd.DataFrame:
     끝까지 1이면 ``effective_to`` 를 비워 현재까지 유효한 것으로 둔다.
     """
     rows: list[dict[str, object]] = []
-    for regulation in sorted(set(events["regulation_type"])):
-        same = events.loc[events["regulation_type"] == regulation]
+    by_district = events.loc[events["regulation_type"].isin(S.REGULATION_COLUMNS)]
+    for regulation in sorted(set(by_district["regulation_type"])):
+        same = by_district.loc[by_district["regulation_type"] == regulation]
         for district in S.SEOUL_DISTRICTS:
             applies = [
                 (e["effective_date"], e["value"])
@@ -459,3 +474,97 @@ class RegulationCsvCollector:
 
     def fetch(self) -> pd.DataFrame:
         return to_regulation_history(load_regulation_events(self.path))
+
+
+# ---------------------------------------------------------------------------
+# 전국 공통 규제
+# ---------------------------------------------------------------------------
+# DSR·대출 한도·양도세 같은 규제는 자치구별로 갈리지 않고 시행일에 전국이 같이 바뀐다.
+# 그래서 자치구 × 기간 테이블이 아니라 기준금리와 같은 '변경일 + 그때의 상태' 표로 둔다.
+# 월 단위로 뭉개면 10·15 대책이 10월 1~14일 거래에도 붙어 미래 정보가 섞인다.
+
+NATIONAL_REGULATION_STATE_COLUMNS: tuple[str, ...] = (
+    "effective_date",
+    *S.NATIONAL_REGULATION_COLUMNS,
+)
+
+
+def to_national_regulation_state(events: pd.DataFrame) -> pd.DataFrame:
+    """규제 이벤트 → 전국 공통 규제의 '변경일 + 그 시점 상태' 표.
+
+    규제가 하나라도 바뀐 날마다 한 줄이 생기고, 그 줄에는 그날 기준으로 걸려 있는
+    모든 전국 규제의 값이 들어간다. 나중 이벤트가 앞 이벤트를 덮어쓴다
+    (DSR 1단계 → 2단계처럼 같은 규제가 단계만 올라가는 경우가 있다).
+
+    첫 줄은 아무 규제도 없는 기본 상태이고, 기간 시작 전에 놓아 그 이전 계약에도
+    기본값이 붙게 한다.
+    """
+    national = events.loc[events["regulation_type"].isin(S.NATIONAL_REGULATION_COLUMNS)]
+    national = national.sort_values("effective_date")
+
+    state = dict(S.NATIONAL_REGULATION_DEFAULTS)
+    rows: list[dict[str, Any]] = []
+    for when, same_day in national.groupby("effective_date", sort=True):
+        for _, event in same_day.iterrows():
+            state[event["regulation_type"]] = int(event["value"])
+        rows.append({"effective_date": when, **state})
+
+    if not rows:
+        return pd.DataFrame(columns=list(NATIONAL_REGULATION_STATE_COLUMNS))
+
+    first = pd.Timestamp(rows[0]["effective_date"]) - pd.Timedelta(days=1)
+    base = {"effective_date": first, **S.NATIONAL_REGULATION_DEFAULTS}
+    out = pd.DataFrame([base, *rows], columns=list(NATIONAL_REGULATION_STATE_COLUMNS))
+    return out.reset_index(drop=True)
+
+
+# ---------------------------------------------------------------------------
+# 금리 (ECOS 10종)
+# ---------------------------------------------------------------------------
+
+
+def read_rate_series(rate_dir: str | Path) -> pd.DataFrame:
+    """``scripts/collect_rates.py`` 가 받아 둔 월별 JSON 들 → ``ym`` × 금리 10종 표.
+
+    파일 하나가 통계항목 하나이고, 안에 ``name`` (한글 항목명) 과 ``rows``
+    (``{"ym": "202101", "value": "0.5"}`` 목록) 가 들어 있다.
+    ``schemas.RATE_SERIES`` 에 없는 항목은 건너뛴다.
+
+    한국은행이 아직 올리지 않은 최근 달은 비어 있을 수 있다. 그 달은 null 로 남긴다
+    (``value`` 가 빈 문자열로 오는 경우도 같다).
+    """
+    directory = Path(rate_dir)
+    files = sorted(directory.glob("*.json"))
+    if not files:
+        raise CollectError(f"금리 JSON 이 없습니다: {directory}")
+
+    table: dict[str, dict[str, float]] = {}
+    for path in files:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        name = str(payload.get("name", "")).strip()
+        column = S.RATE_NAME_TO_COLUMN.get(name)
+        if column is None:
+            continue
+        series: dict[str, float] = {}
+        for row in payload.get("rows", []):
+            value = row.get("value")
+            when = row.get("ym")
+            if value in (None, "") or when in (None, ""):
+                continue
+            series[str(when)] = float(value)
+        if series:
+            table[column] = series
+
+    if not table:
+        raise CollectError(
+            f"읽을 수 있는 금리 항목이 없습니다. RATE_SERIES 의 name 과 맞는지 확인하세요: {directory}"
+        )
+
+    out = pd.DataFrame(table)
+    out.index.name = "ym"
+    out = out.sort_index().reset_index()
+    out["ym"] = out["ym"].astype("string")
+    for column in S.RATE_COLUMNS:
+        if column not in out.columns:
+            out[column] = pd.NA
+    return out.loc[:, ["ym", *S.RATE_COLUMNS]]

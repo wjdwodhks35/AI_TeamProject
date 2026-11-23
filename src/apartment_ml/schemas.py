@@ -73,6 +73,56 @@ REGULATION_COLUMNS: tuple[str, ...] = (
     REG_LAND_PERMIT,
 )
 
+# 전국 공통 규제. 자치구별로 갈리지 않고 시간축으로만 변하므로 구간 테이블이 아니라
+# 월별 시계열로 다룬다 (collect.to_national_regulation_state).
+# 0/1 이 아닌 값이 있다: DSR 단계는 0~3, 주담대 한도는 억 단위 금액이다.
+REG_DSR_STAGE = "reg_dsr_stage"  # 차주단위 DSR 단계 (0~3)
+REG_STRESS_DSR = "reg_stress_dsr"  # 스트레스 DSR 단계 (0~2)
+REG_MORTGAGE_CAP = "reg_mortgage_cap"  # 주담대 한도(억). 한도 없음 = MORTGAGE_CAP_NONE
+REG_TRANSFER_TAX_HEAVY = "reg_transfer_tax_heavy"  # 양도소득세 중과
+REG_POLICY_LOAN = "reg_policy_loan"  # 정책대출 (완화 방향)
+REG_MATURITY_LIMIT = "reg_maturity_limit"  # 다주택자 만기연장 제한
+MORTGAGE_CAP_NONE = 99  # 한도 규제가 없는 상태를 나타내는 값
+
+NATIONAL_REGULATION_COLUMNS: tuple[str, ...] = (
+    REG_DSR_STAGE,
+    REG_STRESS_DSR,
+    REG_MORTGAGE_CAP,
+    REG_TRANSFER_TAX_HEAVY,
+    REG_POLICY_LOAN,
+    REG_MATURITY_LIMIT,
+)
+NATIONAL_REGULATION_DEFAULTS: dict[str, int] = {
+    REG_DSR_STAGE: 0,
+    REG_STRESS_DSR: 0,
+    REG_MORTGAGE_CAP: MORTGAGE_CAP_NONE,
+    REG_TRANSFER_TAX_HEAVY: 0,
+    REG_POLICY_LOAN: 0,
+    REG_MATURITY_LIMIT: 0,
+}
+
+# 규제 점수: 그 시점에 걸려 있는 규제들의 가중합.
+# 누적 합계로 만들면 값이 한 방향으로만 움직여서 경과 시간을 그대로 학습한다.
+# 그래서 '지금 걸려 있는 것' 만 더하는 상태 기준으로 계산한다.
+# 부호는 집값에 주는 방향이고 크기는 우리가 정한 값이다 (팀 합의 필요 — docs/DATA_SCHEMA.md).
+REG_SCORE = "reg_score"
+REG_SCORE_CHANGE = "reg_score_change"  # 전월 대비 변화 (자치구별)
+REGULATION_SCORE_COLUMNS: tuple[str, ...] = (REG_SCORE, REG_SCORE_CHANGE)
+
+REGULATION_WEIGHTS: dict[str, float] = {
+    # 투기과열지구는 조정대상지역과 겹쳐 지정되므로 둘이 합쳐 -2.0 이 된다.
+    REG_ADJUSTMENT_TARGET: -1.0,
+    REG_SPECULATION_OVERHEATED: -1.0,
+    REG_LAND_PERMIT: -2.0,  # 거래 자체를 막으니 가장 세게
+    REG_DSR_STAGE: -0.5,  # 단계당
+    REG_STRESS_DSR: -0.5,  # 단계당
+    REG_TRANSFER_TAX_HEAVY: -1.0,
+    REG_MATURITY_LIMIT: -0.5,
+    REG_POLICY_LOAN: +1.0,  # 완화라서 양수
+}
+# 주담대 한도는 억 단위 금액이라 단계로 더할 수 없다. 낮은 한도부터 먼저 본다.
+MORTGAGE_CAP_WEIGHTS: tuple[tuple[int, float], ...] = ((4, -2.0), (6, -1.0))
+
 # 파생 컬럼 (preprocess 에서 행 단위로 생성 — 데이터 누출 없음)
 CONTRACT_YEAR = "contract_year"
 CONTRACT_MONTH = "contract_month"
@@ -110,11 +160,53 @@ PRICE_RATIO = "price_ratio"  # price_krw / peer_median_price_krw
 # ---------------------------------------------------------------------------
 # 금리는 '수준' 으로 넣으면 안 된다. 금리가 오르는 시기는 경기가 좋은 시기이기도 해서
 # 수준끼리 비교하면 "금리가 높을 때 집값도 높다" 는 거꾸로 된 관계가 나온다.
-# 실제 수집 데이터에서 수준은 +0.137, 전년 대비 변화는 -0.310 이었다.
+# 월별 평균 평당가 기준 으로 기준금리 수준은 +0.209, 전년 대비 변화는 -0.752 였다 (68개월).
 
 BASE_RATE_CHANGE_12M = "base_rate_change_12m"  # 12개월 전 대비 변화(%포인트)
 BASE_RATE_CHANGE_3M = "base_rate_change_3m"  # 3개월 전 대비 변화(%포인트)
 BASE_RATE_CHANGE_COLUMNS: tuple[str, ...] = (BASE_RATE_CHANGE_12M, BASE_RATE_CHANGE_3M)
+
+# 기준금리 하나로는 부족하다. 가계가 실제로 부담하는 금리는 기준금리와 다르게 움직이고,
+# 특히 대출금리는 '6개월 전의 변화' 가 지금 가격과 더 강하게 맞물린다.
+# 월별 평균 평당가 기준 전년 대비 변화와의 상관 (동시점 -> 6개월 선행):
+#   기준금리 -0.752 -> -0.632,  주담대 -0.435 -> -0.737,  국고채3년 -0.557 -> -0.718
+# 선행 변수를 쓸지는 모델 담당자가 정한다. 여기서는 동시점과 3개월 변화만 붙인다.
+MORTGAGE_RATE = "mortgage_rate"  # 주택담보대출
+MORTGAGE_RATE_FIXED = "mortgage_rate_fixed"  # 주택담보대출 고정형
+MORTGAGE_RATE_VARIABLE = "mortgage_rate_variable"  # 주택담보대출 변동형
+GROUP_LOAN_RATE = "group_loan_rate"  # 집단대출
+JEONSE_LOAN_RATE = "jeonse_loan_rate"  # 전세자금대출
+HOUSEHOLD_LOAN_RATE = "household_loan_rate"  # 가계대출 전체
+TREASURY_3Y = "treasury_3y"  # 국고채 3년
+TREASURY_10Y = "treasury_10y"  # 국고채 10년
+CD_91D = "cd_91d"  # CD 91일
+
+# (내부 컬럼명, 수집 JSON 의 name 값). 수집 스크립트가 쓰는 한글 이름과 짝지어 둔다.
+RATE_SERIES: tuple[tuple[str, str], ...] = (
+    (BASE_RATE, "기준금리"),
+    (MORTGAGE_RATE, "주담대"),
+    (MORTGAGE_RATE_FIXED, "주담대_고정"),
+    (MORTGAGE_RATE_VARIABLE, "주담대_변동"),
+    (GROUP_LOAN_RATE, "집단대출"),
+    (JEONSE_LOAN_RATE, "전세자금대출"),
+    (HOUSEHOLD_LOAN_RATE, "가계대출"),
+    (TREASURY_3Y, "국고채3년"),
+    (TREASURY_10Y, "국고채10년"),
+    (CD_91D, "CD91일"),
+)
+RATE_COLUMNS: tuple[str, ...] = tuple(col for col, _ in RATE_SERIES)
+RATE_NAME_TO_COLUMN: dict[str, str] = {name: col for col, name in RATE_SERIES}
+RATE_CHANGE_MONTHS: tuple[int, ...] = (12, 3)
+
+
+def rate_change_column(rate_column: str, months: int) -> str:
+    """금리 변화량 컬럼명. (base_rate, 12) -> base_rate_change_12m"""
+    return f"{rate_column}_change_{months}m"
+
+
+RATE_CHANGE_COLUMNS: tuple[str, ...] = tuple(
+    rate_change_column(col, months) for col in RATE_COLUMNS for months in RATE_CHANGE_MONTHS
+)
 
 
 @dataclass(frozen=True)
@@ -149,6 +241,39 @@ TRANSACTION_SCHEMA: tuple[ColumnSpec, ...] = (
     ColumnSpec(LAND_LEASEHOLD, "Int64 (nullable)", False, "0/1", "토지임대부 여부"),
     ColumnSpec(BASE_RATE_CHANGE_12M, "float (nullable)", False, "%p", "기준금리 전년 대비 변화"),
     ColumnSpec(BASE_RATE_CHANGE_3M, "float (nullable)", False, "%p", "기준금리 3개월 대비 변화"),
+    # 기준금리를 제외한 9종의 수준
+    *(
+        ColumnSpec(col, "float (nullable)", False, "%", f"{name} 금리 수준")
+        for col, name in RATE_SERIES
+        if col != BASE_RATE
+    ),
+    # 기준금리를 제외한 9종의 변화량
+    *(
+        ColumnSpec(
+            rate_change_column(col, months),
+            "float (nullable)",
+            False,
+            "%p",
+            f"{name} {months}개월 대비 변화",
+        )
+        for col, name in RATE_SERIES
+        for months in RATE_CHANGE_MONTHS
+        if col != BASE_RATE
+    ),
+    ColumnSpec(REG_DSR_STAGE, "Int64 (nullable)", False, "단계", "차주단위 DSR 단계 (0~3)"),
+    ColumnSpec(REG_STRESS_DSR, "Int64 (nullable)", False, "단계", "스트레스 DSR 단계 (0~2)"),
+    ColumnSpec(
+        REG_MORTGAGE_CAP,
+        "Int64 (nullable)",
+        False,
+        "억원",
+        f"주담대 한도 ({MORTGAGE_CAP_NONE} = 한도 규제 없음)",
+    ),
+    ColumnSpec(REG_TRANSFER_TAX_HEAVY, "Int64 (nullable)", False, "0/1", "양도소득세 중과"),
+    ColumnSpec(REG_POLICY_LOAN, "Int64 (nullable)", False, "0/1", "정책대출 시행 (완화)"),
+    ColumnSpec(REG_MATURITY_LIMIT, "Int64 (nullable)", False, "0/1", "만기연장 제한"),
+    ColumnSpec(REG_SCORE, "float (nullable)", False, "점", "그 시점 규제 가중합"),
+    ColumnSpec(REG_SCORE_CHANGE, "float (nullable)", False, "점", "규제 점수 전월 대비 변화"),
 )
 
 REQUIRED_COLUMNS: tuple[str, ...] = tuple(c.name for c in TRANSACTION_SCHEMA if c.required)
@@ -159,6 +284,59 @@ OPTIONAL_COLUMNS: tuple[str, ...] = tuple(c.name for c in TRANSACTION_SCHEMA if 
 DUPLICATE_KEY: tuple[str, ...] = (DISTRICT, CONTRACT_DATE, AREA_M2, FLOOR, PRICE_KRW)
 # complex_id 가 있으면 단지를 정확히 구분한다 (같은 이름의 다른 단지가 511개 있었다).
 DUPLICATE_KEY_OPTIONAL: tuple[str, ...] = (DONG, APARTMENT_NAME, COMPLEX_ID)
+
+# ---------------------------------------------------------------------------
+# 학습 데이터에서 빼야 하는 원본 컬럼
+# ---------------------------------------------------------------------------
+# 국토교통부 상세 자료에는 계약 시점에 존재하지 않는 칸이 섞여 있다. 자치구별 CSV
+# (data/processed/transactions_*.csv) 에는 원본 확인용으로 남겨 두고, 학습용 한 장의
+# 표에서는 뺀다. scripts/build_dataset.py 가 이 목록을 사용한다.
+
+# 값이 비어 있는지만 봐도 해제 여부가 드러나는 칸. 해제된 거래는 등기를 하지 않고
+# 동 정보도 붙지 않는다. 실제 수집 데이터에서 rgstDate 는 해제 거래의 0.0%,
+# 정상 거래의 79.1% 에 있었고 aptDong 은 0.0% 대 72.5% 였다.
+LABEL_LEAKING_RAW_COLUMNS: tuple[str, ...] = ("rgstDate", "aptDong")
+
+# 2024년부터만 제공되는 칸. 값이 있다는 것 자체가 '최근 거래' 라는 뜻이 되어
+# 계약일을 빼도 시점 정보가 새어 들어간다.
+TIME_LEAKING_RAW_COLUMNS: tuple[str, ...] = ("slerGbn", "buyerGbn")
+
+# 정답값·계약일을 그대로 다시 담고 있는 칸. price_krw, contract_date 를 빼고
+# 나머지 전부로 학습하면 이 칸들을 통해 정답이 들어간다.
+DUPLICATE_TARGET_RAW_COLUMNS: tuple[str, ...] = (
+    "deal_amount_manwon",
+    "deal_year",
+    "deal_month",
+    "deal_day",
+)
+
+# 주소 계열 원본. 자치구·법정동·단지 일련번호로 이미 표현되어 있다.
+UNUSED_RAW_COLUMNS: tuple[str, ...] = (
+    "roadNm",
+    "roadNmBonbun",
+    "roadNmBubun",
+    "roadNmCd",
+    "roadNmSeq",
+    "roadNmSggCd",
+    "roadNmbCd",
+    "bonbun",
+    "bubun",
+    "jibun",
+    "landCd",
+    "umdCd",
+)
+
+# 해제 정보. 해제 거래를 지운 기본 설정에서는 전부 비어 있어 의미가 없고, 남겨 둔
+# 경우(--keep-cancelled) 에는 레이블 검증에 쓰므로 그때만 유지한다.
+CANCELLATION_RAW_COLUMNS: tuple[str, ...] = ("cancel_type", "cancel_date")
+
+TRAINING_DROP_COLUMNS: tuple[str, ...] = (
+    *LABEL_LEAKING_RAW_COLUMNS,
+    *TIME_LEAKING_RAW_COLUMNS,
+    *DUPLICATE_TARGET_RAW_COLUMNS,
+    *UNUSED_RAW_COLUMNS,
+)
+
 
 # ---------------------------------------------------------------------------
 # 모델 입력 변수 / 정답값 구분
@@ -174,9 +352,16 @@ REGRESSION_NUMERIC_FEATURES: tuple[str, ...] = (
     BUILDING_AGE,
     CONTRACT_YEAR,
     CONTRACT_MONTH,
+    # 금리는 변화량을 쓴다. 수준은 데이터에는 남겨 두지만 기본 입력에서 뺀다 —
+    # 금리가 오르는 시기는 경기가 좋은 시기이기도 해서 수준끼리 비교하면 부호가 뒤집힌다.
+    # base_rate 수준만 예외로 남긴다 (scenarios.interest_rate 가 이 컬럼을 요구한다).
     BASE_RATE,
-    *BASE_RATE_CHANGE_COLUMNS,
+    *RATE_CHANGE_COLUMNS,
     *REGULATION_COLUMNS,
+    *NATIONAL_REGULATION_COLUMNS,
+    # 규제 점수는 플래그의 가중합이라 정보가 겹치지만, 68개월에 규제 이벤트가 20건뿐이어서
+    # 각 플래그의 부호를 데이터에서 학습하기엔 표본이 적다. 방향을 미리 넣어 주는 값이다.
+    *REGULATION_SCORE_COLUMNS,
     *DEAL_FEATURE_COLUMNS,
 )
 REGRESSION_CATEGORICAL_FEATURES: tuple[str, ...] = (DISTRICT,)

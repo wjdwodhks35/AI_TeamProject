@@ -235,11 +235,12 @@ def ensure_optional_columns(df: pd.DataFrame) -> pd.DataFrame:
         S.BUILT_YEAR,
         S.ANOMALY_LABEL,
         *S.REGULATION_COLUMNS,
+        *S.NATIONAL_REGULATION_COLUMNS,
         *S.DEAL_FEATURE_COLUMNS,
     ):
         if col not in out.columns:
             out[col] = pd.Series(pd.NA, index=out.index, dtype="Int64")
-    for col in (S.BASE_RATE, *S.BASE_RATE_CHANGE_COLUMNS):
+    for col in (*S.RATE_COLUMNS, *S.RATE_CHANGE_COLUMNS, *S.REGULATION_SCORE_COLUMNS):
         if col not in out.columns:
             out[col] = np.nan
     return out
