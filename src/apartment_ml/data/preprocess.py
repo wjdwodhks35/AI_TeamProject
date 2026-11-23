@@ -458,7 +458,7 @@ def label_anomalies(
     df: pd.DataFrame,
     *,
     thresholds: dict[int, float] | None = None,
-    direction: str = "below",
+    direction: str = "both",
 ) -> pd.DataFrame:
     """기준가에서 많이 벗어난 거래에 ``anomaly_label`` 을 단다.
 
