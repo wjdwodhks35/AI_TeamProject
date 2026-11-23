@@ -139,10 +139,11 @@ def test_label_uses_tier_specific_threshold():
     df = pd.DataFrame(
         {
             S.PEER_TIER: pd.array([1, 1, 2, 2], dtype="Int64"),
-            S.PRICE_RATIO: [1.25, 1.10, 1.25, 1.35],
+            S.PRICE_RATIO: [0.75, 0.90, 0.75, 0.65],
         }
     )
     out = label_anomalies(df)
+    # 1단계는 20%, 2단계는 30% 까지 허용한다. 0.75 는 1단계에서만 걸린다.
     assert out[S.ANOMALY_LABEL].tolist() == [1, 0, 0, 1]
 
 
@@ -151,7 +152,7 @@ def test_label_skips_coarse_tiers():
     df = pd.DataFrame(
         {
             S.PEER_TIER: pd.array([3, 4, 0], dtype="Int64"),
-            S.PRICE_RATIO: [1.5, 0.5, None],
+            S.PRICE_RATIO: [0.5, 0.5, None],
         }
     )
     out = label_anomalies(df)
@@ -159,7 +160,7 @@ def test_label_skips_coarse_tiers():
 
 
 def test_label_custom_thresholds():
-    df = pd.DataFrame({S.PEER_TIER: pd.array([1], dtype="Int64"), S.PRICE_RATIO: [1.15]})
+    df = pd.DataFrame({S.PEER_TIER: pd.array([1], dtype="Int64"), S.PRICE_RATIO: [0.85]})
     assert label_anomalies(df, thresholds={1: 0.10})[S.ANOMALY_LABEL].tolist() == [1]
     assert label_anomalies(df, thresholds={1: 0.20})[S.ANOMALY_LABEL].tolist() == [0]
 
@@ -178,3 +179,36 @@ def test_peer_columns_are_forbidden_as_features():
     for column in (S.PEER_MEDIAN_PRICE_KRW, S.PRICE_RATIO, S.PEER_TIER):
         assert column in S.REGRESSION_FORBIDDEN_FEATURES
         assert column in S.CLASSIFICATION_FORBIDDEN_FEATURES
+
+
+# ---------------------------------------------------------------------------
+# 이상거래 레이블의 방향
+# ---------------------------------------------------------------------------
+
+
+def labelled_frame() -> pd.DataFrame:
+    """기준가 대비 비율만 손으로 넣은 표. 1단계 기준은 20% 다."""
+    return pd.DataFrame(
+        {
+            S.PEER_TIER: [1, 1, 1, 1],
+            S.PRICE_RATIO: [0.70, 0.95, 1.05, 1.40],
+        }
+    )
+
+
+def test_label_flags_only_cheap_deals_by_default():
+    """기본값은 기준가보다 싼 쪽만 본다. 비싼 쪽에는 신호가 없었다."""
+    out = label_anomalies(labelled_frame())
+
+    assert list(out[S.ANOMALY_LABEL]) == [1, 0, 0, 0]
+
+
+def test_label_both_directions_when_asked():
+    out = label_anomalies(labelled_frame(), direction="both")
+
+    assert list(out[S.ANOMALY_LABEL]) == [1, 0, 0, 1]
+
+
+def test_label_rejects_unknown_direction():
+    with pytest.raises(ValueError, match="direction 은"):
+        label_anomalies(labelled_frame(), direction="above")

@@ -451,8 +451,14 @@ def add_peer_price(df: pd.DataFrame, *, period: str = "Q") -> pd.DataFrame:
 DEFAULT_ANOMALY_THRESHOLDS: dict[int, float] = {1: 0.20, 2: 0.30}
 
 
+ANOMALY_DIRECTIONS = ("below", "both")
+
+
 def label_anomalies(
-    df: pd.DataFrame, *, thresholds: dict[int, float] | None = None
+    df: pd.DataFrame,
+    *,
+    thresholds: dict[int, float] | None = None,
+    direction: str = "below",
 ) -> pd.DataFrame:
     """기준가에서 많이 벗어난 거래에 ``anomaly_label`` 을 단다.
 
@@ -460,9 +466,27 @@ def label_anomalies(
     이 함수는 확정 전 후보이며, 호출하지 않으면 ``anomaly_label`` 은 null 로 남는다.
     ``configs/settings.yaml`` 의 ``classification.training_enabled`` 도 함께 확인한다.
 
-    ``thresholds`` 는 기준가 단계별 허용 범위다. 기본값은 1단계 ±20%, 2단계 ±30% 이고,
+    ``thresholds`` 는 기준가 단계별 허용 범위다. 기본값은 1단계 20%, 2단계 30% 이고,
     여기에 없는 단계는 레이블을 달지 않는다 (null 로 남긴다).
+
+    ``direction``
+        ``"below"`` (기본) 기준가보다 **싼** 거래만 이상거래로 본다.
+        ``"both"``        양쪽 다 본다.
+
+    싼 쪽만 보는 이유는 비싼 쪽에 신호가 없기 때문이다. 수집 자료에서 직거래 비율로
+    확인하면 (전체 2.74% 기준):
+
+        1단계 싸게   1,172건  직거래 67.03%  = 24.4배
+        1단계 비싸게 2,121건  직거래  3.88%  =  1.4배
+        2단계 싸게   1,527건  직거래 23.42%  =  8.5배
+        2단계 비싸게 2,759건  직거래  1.36%  =  0.5배   <- 평균보다 낮다
+
+    양쪽을 다 세면 레이블의 64% 가 비싼 쪽인데 그쪽은 노이즈다. 시세를 띄우는 조작은
+    대개 계약 해제로 끝나고 그 행은 이미 제거되므로, 남은 고가 거래는 리모델링·고층·
+    조망 같은 정상 사유가 대부분이다. 반대로 싸게 넘기는 거래는 완결되어 자료에 남는다.
     """
+    if direction not in ANOMALY_DIRECTIONS:
+        raise ValueError(f"direction 은 {ANOMALY_DIRECTIONS} 중 하나여야 합니다: {direction!r}")
     if S.PRICE_RATIO not in df.columns or S.PEER_TIER not in df.columns:
         raise SchemaValidationError("먼저 add_peer_price 로 기준가를 만들어야 합니다.")
 
@@ -472,6 +496,9 @@ def label_anomalies(
     for tier, limit in limits.items():
         target = (out[S.PEER_TIER] == tier) & out[S.PRICE_RATIO].notna()
         ratio = out.loc[target, S.PRICE_RATIO]
-        label[target] = ((ratio > 1 + limit) | (ratio < 1 - limit)).astype("Int64")
+        hit = ratio < 1 - limit
+        if direction == "both":
+            hit = hit | (ratio > 1 + limit)
+        label[target] = hit.astype("Int64")
     out[S.ANOMALY_LABEL] = label
     return out
