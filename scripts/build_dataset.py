@@ -170,7 +170,7 @@ def combine(paths: list[Path]) -> pd.DataFrame:
 
 
 def build(
-    *, label: bool, keep_cancelled: bool, rebuild: bool = False, direction: str = "below"
+    *, label: bool, keep_cancelled: bool, rebuild: bool = False, direction: str = "both"
 ) -> Path:
     settings = get_settings()
     raw_dir = Path(settings.path("raw_dir"))
@@ -271,8 +271,8 @@ def main() -> None:
     parser.add_argument(
         "--direction",
         choices=ANOMALY_DIRECTIONS,
-        default="below",
-        help="below: 기준가보다 싼 거래만 (기본) / both: 양쪽 다",
+        default="both",
+        help="both: 양쪽으로 벗어난 거래 (기본) / below: 싼 거래만",
     )
     parser.add_argument(
         "--keep-cancelled",
