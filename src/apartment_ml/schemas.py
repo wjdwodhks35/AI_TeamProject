@@ -330,6 +330,10 @@ UNUSED_RAW_COLUMNS: tuple[str, ...] = (
 # 경우(--keep-cancelled) 에는 레이블 검증에 쓰므로 그때만 유지한다.
 CANCELLATION_RAW_COLUMNS: tuple[str, ...] = ("cancel_type", "cancel_date")
 
+# 해제 여부 (레이블 검증용). 계약 이후에 생기는 사실이므로 입력 변수로 쓰면 안 된다.
+# 해제 쌍은 중복 제거에서 한 줄로 묶이므로, 묶이기 전에 양쪽에 표시해 둬야 수가 맞는다.
+WAS_CANCELLED = "was_cancelled"
+
 TRAINING_DROP_COLUMNS: tuple[str, ...] = (
     *LABEL_LEAKING_RAW_COLUMNS,
     *TIME_LEAKING_RAW_COLUMNS,
@@ -376,6 +380,7 @@ REGRESSION_FORBIDDEN_FEATURES: frozenset[str] = frozenset(
         PRICE_KRW,
         PRICE_PER_M2,
         ANOMALY_LABEL,
+        WAS_CANCELLED,
         REFERENCE_PRICE_KRW,
         PEER_MEDIAN_PRICE_KRW,
         PRICE_RATIO,
@@ -398,7 +403,7 @@ CLASSIFICATION_FEATURES: tuple[str, ...] = (
 # 분류에서는 price_krw 를 입력으로 쓸 수 있으므로, peer_median_price_krw 가 함께 들어가면
 # 레이블을 그대로 역산할 수 있다. peer_tier 도 넓은 단계일수록 이상 판정이 많아 부분 누출이다.
 CLASSIFICATION_FORBIDDEN_FEATURES: frozenset[str] = frozenset(
-    {ANOMALY_LABEL, PEER_MEDIAN_PRICE_KRW, PRICE_RATIO, PEER_TIER}
+    {ANOMALY_LABEL, PEER_MEDIAN_PRICE_KRW, PRICE_RATIO, PEER_TIER, WAS_CANCELLED}
 )
 
 ANOMALY_LABEL_VALUES: tuple[int, ...] = (0, 1)  # 0 = 정상, 1 = 이상거래 의심

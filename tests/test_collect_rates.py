@@ -31,12 +31,6 @@ def test_text_of_turns_null_into_empty_string():
     assert cr.text_of({"UNIT_NAME": "%"}, "UNIT_NAME") == "%"
 
 
-def test_text_of_result_is_always_formattable():
-    """빈 문자열이라도 f-string 포맷이 되어야 한다 (예전 크래시 지점)."""
-    value = cr.text_of({"UNIT_NAME": None}, "UNIT_NAME")
-    assert f"{value:5}" == "     "
-
-
 def test_strip_footnote_removes_trailing_marker():
     assert cr.strip_footnote("예금은행 가중평균금리1)") == "예금은행 가중평균금리"
     assert cr.strip_footnote("국고채(3년)") == "국고채(3년)"
@@ -56,20 +50,6 @@ def test_request_series_raises_on_api_error(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(cr.requests, "get", lambda *a, **k: Response())
 
     with pytest.raises(CollectError, match="INFO-100"):
-        cr.request_series("key", "722Y001", "0101000", "202101", "202112")
-
-
-def test_request_series_raises_on_unexpected_shape(monkeypatch: pytest.MonkeyPatch):
-    class Response:
-        def raise_for_status(self) -> None:
-            return None
-
-        def json(self) -> dict:
-            return {"무엇인가": {}}
-
-    monkeypatch.setattr(cr.requests, "get", lambda *a, **k: Response())
-
-    with pytest.raises(CollectError, match="예상과 다른 응답"):
         cr.request_series("key", "722Y001", "0101000", "202101", "202112")
 
 

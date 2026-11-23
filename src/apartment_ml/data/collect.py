@@ -303,6 +303,28 @@ def _drop_cancelled_pairs(df: pd.DataFrame) -> pd.DataFrame:
     return df.loc[~key.isin(key[cancelled.to_numpy()])].copy()
 
 
+def mark_cancelled_pairs(df: pd.DataFrame) -> pd.DataFrame:
+    """해제된 계약의 **원본 행에도** 해제 표시를 남긴다 (``was_cancelled``).
+
+    해제 쌍은 단지·날짜·면적·층·가격이 모두 같아서 중복 제거에서 한 줄로 묶인다. 어느
+    쪽이 남는지는 파일 순서에 달려 있으므로, 묶이기 전에 양쪽에 같은 표시를 해 두어야
+    수가 맞는다. 표시 없이 ``cancel_type`` 만 세면 실제 해제 13,385건이 4,602건으로 줄었다.
+
+    계약 이후에 생기는 사실이므로 입력 변수로는 쓸 수 없다 (레이블 검증 전용).
+    """
+    out = df.copy()
+    cancelled = _cancelled_mask(out)
+    if not cancelled.any():
+        out[S.WAS_CANCELLED] = pd.Series(0, index=out.index, dtype="Int64")
+        return out
+
+    key_columns = [c for c in (*S.DUPLICATE_KEY, *S.DUPLICATE_KEY_OPTIONAL) if c in out.columns]
+    key = pd.MultiIndex.from_frame(out[key_columns].astype("string").fillna(""))
+    paired = key.isin(key[cancelled.to_numpy()])
+    out[S.WAS_CANCELLED] = pd.Series(paired.astype(int), index=out.index, dtype="Int64")
+    return out
+
+
 def normalize_molit_api_frame(raw: pd.DataFrame, *, drop_cancelled: bool = True) -> pd.DataFrame:
     """MOLIT OpenAPI 응답(DataFrame) → 내부 표준 컬럼.
 
@@ -333,8 +355,8 @@ def normalize_molit_api_frame(raw: pd.DataFrame, *, drop_cancelled: bool = True)
     df[S.SOURCE] = "molit_api"
 
     # 키에 계약일·가격이 들어가므로 파생 컬럼을 만든 뒤에 지운다.
-    if drop_cancelled and "cancel_type" in df.columns:
-        df = _drop_cancelled_pairs(df)
+    if "cancel_type" in df.columns:
+        df = _drop_cancelled_pairs(df) if drop_cancelled else mark_cancelled_pairs(df)
     return df
 
 

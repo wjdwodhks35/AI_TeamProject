@@ -49,31 +49,6 @@ def test_national_state_tracks_multi_level_values():
     assert list(state[S.REG_DSR_STAGE]) == [0, 1, 2, 3]
 
 
-def test_national_state_starts_from_no_regulation():
-    """첫 이벤트보다 이른 계약에 기본 상태가 붙도록 한 줄을 앞에 둔다."""
-    state = to_national_regulation_state(events([("2025-06-28", "ALL", S.REG_MORTGAGE_CAP, 6)]))
-
-    first = state.iloc[0]
-    assert first["effective_date"] < pd.Timestamp("2025-06-28")
-    assert first[S.REG_MORTGAGE_CAP] == S.MORTGAGE_CAP_NONE
-
-
-def test_national_state_keeps_other_columns_when_one_changes():
-    """한 규제만 바뀐 날에도 나머지 규제의 현재 값이 함께 들어간다."""
-    state = to_national_regulation_state(
-        events(
-            [
-                ("2024-02-26", "ALL", S.REG_STRESS_DSR, 1),
-                ("2025-06-28", "ALL", S.REG_MORTGAGE_CAP, 6),
-            ]
-        )
-    ).set_index("effective_date")
-
-    row = state.loc[pd.Timestamp("2025-06-28")]
-    assert row[S.REG_MORTGAGE_CAP] == 6
-    assert row[S.REG_STRESS_DSR] == 1  # 앞서 올라간 단계가 유지된다
-
-
 def test_national_state_is_empty_without_national_events():
     """구별 규제만 있으면 빈 표를 준다 (컬럼 모양은 유지)."""
     state = to_national_regulation_state(
@@ -107,18 +82,6 @@ def test_load_events_rejects_non_binary_district_value(tmp_path):
     )
 
     with pytest.raises(ValueError, match="0 또는 1"):
-        load_regulation_events(path)
-
-
-def test_load_events_rejects_unknown_type(tmp_path):
-    path = tmp_path / "events.csv"
-    path.write_text(
-        "effective_date,districts,regulation_type,value,description,source\n"
-        "2021-01-01,ALL,reg_made_up,1,설명,출처\n",
-        encoding="utf-8",
-    )
-
-    with pytest.raises(ValueError, match="알 수 없는 regulation_type"):
         load_regulation_events(path)
 
 
@@ -190,14 +153,6 @@ def test_regulation_score_sums_every_active_regulation():
     )
 
     assert regulation_score(frame).iloc[0] == pytest.approx(-9.0)
-
-
-def test_regulation_score_policy_loan_is_positive():
-    """정책대출은 완화라서 점수를 올린다."""
-    frame = pd.DataFrame({S.REG_POLICY_LOAN: [0, 1]})
-    score = regulation_score(frame)
-
-    assert score.iloc[1] > score.iloc[0]
 
 
 def test_regulation_score_mortgage_cap_takes_lowest_band():

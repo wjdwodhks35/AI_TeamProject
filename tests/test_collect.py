@@ -106,12 +106,32 @@ def test_cancelled_without_original_is_removed():
     assert out.iloc[0]["contract_date"] == "2024-03-20"
 
 
-def test_keep_cancelled_for_validation():
-    """drop_cancelled=False 면 해제 여부를 cancel_type 으로 구분할 수 있다."""
-    raw = molit_rows([{}, {"cdealType": "O"}])
+def test_keep_cancelled_marks_both_rows_of_a_pair():
+    """해제 쌍은 중복 제거에서 한 줄로 묶이므로, 묶이기 전에 양쪽에 표시해야 수가 맞는다.
+
+    cancel_type 만 보면 해제 행 한 줄에만 표시가 있어서, 원본 행이 살아남는 경우
+    해제였다는 사실이 사라진다. 실제 자료에서 13,385건이 4,602건으로 줄었다.
+    """
+    raw = molit_rows([{}, {"cdealType": "O"}, {"dealDay": "20"}])
     out = normalize_molit_api_frame(raw, drop_cancelled=False)
-    assert len(out) == 2
-    assert out["cancel_type"].tolist() == ["", "O"]
+
+    assert len(out) == 3
+    assert out[S.WAS_CANCELLED].tolist() == [1, 1, 0]
+    # 중복 제거로 한 줄이 사라져도 해제였다는 사실은 남는다.
+    assert out.loc[out[S.WAS_CANCELLED] == 1, S.WAS_CANCELLED].max() == 1
+
+
+def test_was_cancelled_is_zero_when_nothing_was_cancelled():
+    raw = molit_rows([{}, {"dealDay": "20"}])
+    out = normalize_molit_api_frame(raw, drop_cancelled=False)
+
+    assert out[S.WAS_CANCELLED].tolist() == [0, 0]
+
+
+def test_was_cancelled_is_forbidden_as_a_feature():
+    """해제는 계약 이후에 생기는 사실이라 입력 변수로 쓰면 미래 정보가 들어간다."""
+    assert S.WAS_CANCELLED in S.REGRESSION_FORBIDDEN_FEATURES
+    assert S.WAS_CANCELLED in S.CLASSIFICATION_FORBIDDEN_FEATURES
 
 
 def test_same_complex_different_price_is_not_a_pair():

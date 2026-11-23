@@ -86,12 +86,21 @@ def read_district(folder: Path, *, drop_cancelled: bool) -> pd.DataFrame:
     return normalize_molit_api_frame(raw, drop_cancelled=drop_cancelled)
 
 
-def is_fresh(csv_path: Path, folder: Path) -> bool:
-    """이미 만들어 둔 자치구 CSV 가 원본보다 새것인지 본다."""
+def is_fresh(csv_path: Path, folder: Path, *, drop_cancelled: bool) -> bool:
+    """이미 만들어 둔 자치구 CSV 를 그대로 쓸 수 있는지 본다.
+
+    원본보다 새것이어야 하고, 해제 거래 처리 방식도 같아야 한다. 방식이 다른 파일을
+    재사용하면 --keep-cancelled 를 붙여도 해제 거래가 빠진 표가 나온다.
+    해제 거래를 남긴 파일에는 was_cancelled 칸이 있다.
+    """
     if not csv_path.exists():
         return False
     newest = max((p.stat().st_mtime for p in folder.glob("*.json")), default=0.0)
-    return csv_path.stat().st_mtime >= newest
+    if csv_path.stat().st_mtime < newest:
+        return False
+    with csv_path.open(encoding="utf-8-sig") as handle:
+        header = handle.readline()
+    return (S.WAS_CANCELLED in header) is not drop_cancelled
 
 
 def build_district_csvs(
@@ -114,7 +123,7 @@ def build_district_csvs(
     print(f"[1] 자치구별 원본 읽기 — 폴더 {len(folders)}개", flush=True)
     for folder in folders:
         path = out_dir / f"{DISTRICT_CSV_PREFIX}{folder.name}.csv"
-        if not rebuild and is_fresh(path, folder):
+        if not rebuild and is_fresh(path, folder, drop_cancelled=drop_cancelled):
             written.append(path)
             print(f"    {folder.name:16} 그대로 둠 (원본이 그대로)", flush=True)
             continue
@@ -238,7 +247,8 @@ def build(
     print(f"[9] 빼는 칸 {len(present)}개 — 계약 시점에 없거나 정답을 다시 담은 원본 칸")
     print(f"    {', '.join(present)}")
     if keep_cancelled:
-        print("    해제 정보는 남겼다 (레이블 검증용. 학습에는 쓰지 않는다)")
+        marked = int(pd.to_numeric(frame[S.WAS_CANCELLED], errors="coerce").fillna(0).sum())
+        print(f"    해제 표시 {marked:,}건을 남겼다 (레이블 검증용. 학습 입력 금지)")
 
     frame = frame.sort_values(S.CONTRACT_DATE).reset_index(drop=True)
     path = out_dir / OUTPUT_NAME

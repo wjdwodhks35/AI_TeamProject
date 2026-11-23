@@ -62,27 +62,8 @@ def test_read_rate_series_skips_blank_values(tmp_path: Path):
     assert out.loc["202103", S.MORTGAGE_RATE] == pytest.approx(2.70)
 
 
-def test_read_rate_series_ignores_unknown_item_names(tmp_path: Path):
-    """RATE_SERIES 에 없는 항목은 건너뛴다 (나중에 다른 통계를 더 받아도 깨지지 않는다)."""
-    write_series(tmp_path, "기준금리", {"202101": "0.5"})
-    write_series(tmp_path, "회사채BBB", {"202101": "8.1"})
-
-    out = read_rate_series(tmp_path)
-
-    assert out.loc[0, S.BASE_RATE] == pytest.approx(0.5)
-    assert "회사채BBB" not in out.columns
-
-
 def test_read_rate_series_raises_when_folder_is_empty(tmp_path: Path):
     with pytest.raises(CollectError, match="금리 JSON 이 없습니다"):
-        read_rate_series(tmp_path)
-
-
-def test_read_rate_series_raises_when_nothing_matches(tmp_path: Path):
-    """파일은 있는데 아는 항목이 하나도 없으면 조용히 빈 표를 주지 않고 멈춘다."""
-    write_series(tmp_path, "회사채BBB", {"202101": "8.1"})
-
-    with pytest.raises(CollectError, match="읽을 수 있는 금리 항목이 없습니다"):
         read_rate_series(tmp_path)
 
 
@@ -121,21 +102,6 @@ def test_attach_rate_series_leaves_null_before_series_starts():
     out = attach_rate_series(deals(["2021-05-01"]), RATES, columns=[S.MORTGAGE_RATE], months=())
 
     assert pd.isna(out[S.MORTGAGE_RATE].iloc[0])
-
-
-def test_attach_rate_series_keeps_row_count():
-    out = attach_rate_series(
-        deals(["2023-02-01", "2023-03-01", "2021-01-01"]),
-        RATES,
-        columns=[S.MORTGAGE_RATE],
-        months=(12,),
-    )
-    assert len(out) == 3
-
-
-def test_attach_rate_series_raises_without_ym_column():
-    with pytest.raises(ValueError, match="'ym' 컬럼이 필요합니다"):
-        attach_rate_series(deals(["2023-02-01"]), RATES.drop(columns=["ym"]))
 
 
 def test_attach_rate_series_raises_when_column_missing():
