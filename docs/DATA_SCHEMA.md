@@ -94,11 +94,29 @@
   - 각 거래에는 `effective_date <= contract_date`를 만족하는 가장 최근 값을 붙입니다 (`merge.attach_base_rate`, `merge_asof backward`).
   - 첫 적용일보다 이른 계약은 NaN으로 둡니다.
   - **금리는 수준으로 모델에 넣지 않습니다.** 금리가 오르는 시기는 경기가 좋은 시기이기도 해서, 수준끼리
-    비교하면 "금리가 높을 때 집값도 높다"는 거꾸로 된 관계가 나옵니다. 실제 수집 데이터(서울 68개월)에서
-    기준금리 수준과 평당가의 상관은 **+0.137**이었고, 전년 대비 변화로 바꾸면 **-0.310**이었습니다.
+    비교하면 "금리가 높을 때 집값도 높다"는 거꾸로 된 관계가 나옵니다. 수집 자료(68개월)를 월별 평균
+    평당가로 집계하면 기준금리 수준과의 상관은 **+0.209**(부호가 뒤집힘), 전년 대비 변화는 **-0.752**입니다.
     `merge.attach_base_rate_changes`가 12개월·3개월 변화량을 붙입니다.
+    월별 시계열은 추세가 강해 상관이 부풀려지므로, 이 숫자는 효과 크기가 아니라 '수준이 아니라 변화를
+    써야 한다'는 근거로만 씁니다.
   - 기준금리는 금융통화위원회 결정일에 바뀌므로 **일별로 받아 값이 바뀐 날만** 남깁니다
     (`collect.EcosBaseRateCollector`). 월별로 받으면 적용일이 한 달 단위로 뭉개집니다.
+    `data/raw/base_rate.csv`가 없으면 `build_dataset.py`가 월별 표에서 변경 월을 찾아 그 달 1일을
+    적용일로 씁니다. 금통위는 월 중간에 열리므로 최대 3주 앞당겨집니다.
+- **금리 10종:** 기준금리 외에 주담대(전체·고정·변동), 집단대출, 전세자금대출, 가계대출,
+  국고채 3년·10년, CD 91일을 받습니다 (`collect.read_rate_series` → `merge.attach_rate_series`).
+  각각 수준과 12개월·3개월 변화량이 붙어 **30칸**이 됩니다.
+  - 대출금리는 월 가중평균이 **다음 달에 공개**되므로 한 달 밀려서 붙입니다
+    (`merge.RATE_SERIES_LAG_MONTHS`). 계약 월 값을 그대로 쓰면 그 시점에 없던 정보가 들어갑니다.
+  - 기본 입력 변수에는 변화량만 넣고 수준은 넣지 않습니다. 단, `base_rate` 수준은 금리 시나리오
+    (`scenarios.interest_rate`)가 그 컬럼을 요구하므로 예외로 남겨 두었습니다.
+- **전국 공통 규제:** DSR 단계(0~3), 스트레스 DSR(0~2), 주담대 한도(억, 99 = 한도 없음),
+  양도세 중과, 정책대출, 만기연장 제한. 자치구별로 갈리지 않으므로 기준금리처럼 **변경일 기준**으로
+  붙입니다 (`collect.to_national_regulation_state` → `merge.attach_national_regulation`).
+  월 단위로 붙이면 10·15 대책이 10월 1~14일 계약에도 붙어 미래 정보가 섞입니다.
+- **규제 점수(`reg_score`, `reg_score_change`):** 그 시점에 걸려 있는 규제의 가중합입니다.
+  가중치는 `schemas.REGULATION_WEIGHTS`에 있고 **우리가 정한 값이라 팀 합의가 필요합니다.**
+  누적 합계로 만들면 값이 한 방향으로만 움직여 모델이 경과 시간을 학습합니다.
 - **규제 이력 테이블:** `district`, `regulation_type`, `announced_date`(선택), `effective_from`, `effective_to`(선택)
   - `effective_from <= contract_date < effective_to`이면 1, 아니면 0입니다. `effective_to`가 비어 있으면 현재까지 유효한 것으로 봅니다.
   - `announced_date`는 기록용이며, 적용 여부 판정에는 쓰지 않습니다.
@@ -153,9 +171,29 @@
 export MOLIT_API_KEY=<공공데이터포털 디코딩 키>
 export ECOS_API_KEY=<한국은행 ECOS 인증키>
 python scripts/collect_molit.py        # 서울 25개 구 x 68개월, 약 1,700회 호출
-python scripts/collect_base_rate.py
+python scripts/collect_rates.py        # 금리 10종 (월별)
+python scripts/collect_base_rate.py    # 기준금리 (일별) — 변경 적용일을 정확히 쓰려면
 ```
-이미 받은 달은 건너뛰므로 중단 후 다시 실행하면 없는 달만 받습니다.
+이미 받은 달·항목은 건너뛰므로 중단 후 다시 실행하면 없는 것만 받습니다.
+
+학습 데이터 만들기 (네트워크 불필요, `data/raw`만 읽습니다):
+```bash
+python scripts/build_dataset.py            # 자치구별 CSV + training_dataset.csv
+python scripts/build_dataset.py --label     # 이상거래 레이블까지 (팀 합의 전 기본 꺼짐)
+python scripts/build_dataset.py --keep-cancelled   # 해제 거래 유지 (레이블 검증용)
+```
+자치구별 CSV가 원본보다 새것이면 건너뛰므로 중단 후 다시 실행하면 남은 구만 읽습니다.
+결과는 **257,655행 × 66칸** 입니다 (`--label` 기준).
+
+| 단계 | 하는 일 |
+|---|---|
+| 1 | 자치구별 월별 JSON → 정규화 → `data/processed/transactions_<코드>_<자치구>.csv` |
+| 2~3 | 합치기 → 타입 변환·값 검증·중복 제거 (`preprocess_transactions`) |
+| 4~5 | 거래 조건(직거래·중개사 위치·토지임대부) → 기준가 4단계 |
+| 6 | 기준금리(변경일 기준) + 금리 9종(계약 월, 한 달 밀림) + 변화량 |
+| 7 | 자치구별 규제 + 전국 공통 규제 + 규제 점수 |
+| 8 | (선택) 이상거래 레이블 |
+| 9~10 | 계약 시점에 없는 원본 칸 22개 제거 → 저장 |
 
 ## 9. 기준가와 이상거래 레이블
 
