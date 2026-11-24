@@ -32,6 +32,7 @@ class HealthResponse(BaseModel):
 class ErrorDetail(BaseModel):
     code: str = Field(..., examples=["MODEL_NOT_READY"])
     message: str
+    issues: list[dict[str, object]] = Field(default_factory=list)
 
 
 class ErrorResponse(BaseModel):

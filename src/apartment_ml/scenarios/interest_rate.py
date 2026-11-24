@@ -20,6 +20,10 @@ from apartment_ml.models.base import ModelNotReadyError, PricePredictor
 DISCLAIMER = "모델 예측값의 조건별 비교 결과이며, 금리 변동이 실제 시장 가격에 미치는 인과효과를 의미하지 않습니다."
 
 
+class ScenarioNotSupportedError(ValueError):
+    """모델이 금리를 입력 변수로 사용하지 않을 때."""
+
+
 @dataclass
 class InterestRateScenarioResult:
     base_rate_before: float
@@ -83,7 +87,7 @@ def compare_interest_rate_scenario(
     if model is None or not getattr(model, "is_fitted", False):
         raise ModelNotReadyError("학습된 가격 회귀 모델이 없어 금리 시나리오를 계산할 수 없습니다.")
     if S.BASE_RATE not in model.feature_columns:
-        raise ValueError(
+        raise ScenarioNotSupportedError(
             "이 모델은 base_rate 를 입력 변수로 사용하지 않아 금리 시나리오를 비교할 수 없습니다."
         )
     before = _check_rate(base_rate_before, "기존")
@@ -94,14 +98,22 @@ def compare_interest_rate_scenario(
     frame[S.BASE_RATE] = [before, after]
 
     preds = model.predict(frame)
+    if getattr(preds, "shape", None) != (2,):
+        raise RuntimeError("Scenario predictions must have shape (2,)")
     p_before, p_after = float(preds[0]), float(preds[1])
+    if not all(math.isfinite(p) for p in (p_before, p_after)):
+        raise RuntimeError("Scenario predictions must be finite")
     warnings = out_of_range_warnings(model, frame)
     diff = p_after - p_before
     pct: float | None = None
-    if p_before > 0:
+    if p_before != 0:
         pct = diff / p_before * 100.0
     else:
-        warnings.append("기존 조건의 예측가격이 0 이하여서 변화율을 계산하지 않았습니다.")
+        warnings.append("기존 조건의 예측가격이 0이어서 변화율을 계산하지 않았습니다.")
+    if p_before < 0 or p_after < 0:
+        warnings.append("음수 예측가격이 포함되어 있습니다. 모델과 입력 조건을 확인하세요.")
+    if not math.isfinite(diff) or (pct is not None and not math.isfinite(pct)):
+        raise RuntimeError("Scenario calculations must be finite")
     return InterestRateScenarioResult(
         base_rate_before=before,
         base_rate_after=after,

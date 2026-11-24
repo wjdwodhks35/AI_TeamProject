@@ -21,6 +21,14 @@ DEFAULT_CONFIG_PATH = PROJECT_ROOT / "configs" / "settings.yaml"
 CONFIG_ENV_VAR = "APARTMENT_ML_CONFIG"
 
 
+def get_cors_origins() -> list[str]:
+    """쉼표로 구분한 개발 UI 출처 설정."""
+    value = os.environ.get(
+        "APARTMENT_ML_CORS_ORIGINS", "http://localhost:3000,http://localhost:5173"
+    )
+    return [origin.strip() for origin in value.split(",") if origin.strip()]
+
+
 class ConfigError(RuntimeError):
     """설정 파일 또는 환경변수가 올바르지 않을 때."""
 
