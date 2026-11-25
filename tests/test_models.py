@@ -31,7 +31,7 @@ def test_regression_forbids_target_as_feature():
         PriceRegressionModel(numeric_features=["area_m2", "price_krw"])
 
 
-@pytest.mark.parametrize("name", ["linear_regression", "random_forest"])
+@pytest.mark.parametrize("name", ["linear_regression", "gradient_boosting"])
 def test_regression_fit_predict_save_load(train_df, tmp_path, name):
     model = PriceRegressionModel(name)
     with pytest.raises(ModelNotReadyError):

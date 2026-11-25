@@ -15,9 +15,10 @@ from typing import Any
 import numpy as np
 import pandas as pd
 from sklearn.base import RegressorMixin
-from sklearn.ensemble import RandomForestRegressor
+from sklearn.ensemble import HistGradientBoostingRegressor, RandomForestRegressor
 from sklearn.linear_model import LinearRegression
 from sklearn.pipeline import Pipeline
+from sklearn.tree import DecisionTreeRegressor
 
 from apartment_ml import schemas as S
 from apartment_ml.data.preprocess import (
@@ -30,8 +31,17 @@ from apartment_ml.models.base import ModelNotReadyError, load_artifact, save_art
 
 REGRESSOR_FACTORIES: dict[str, Callable[[int], RegressorMixin]] = {
     "linear_regression": lambda seed: LinearRegression(),
+    "decision_tree": lambda seed: DecisionTreeRegressor(
+        max_depth=14, min_samples_leaf=5, random_state=seed
+    ),
     "random_forest": lambda seed: RandomForestRegressor(
-        n_estimators=200, random_state=seed, n_jobs=-1
+        n_estimators=200, min_samples_leaf=3, random_state=seed, n_jobs=-1
+    ),
+    # 측정 결과 이 데이터에서 가장 잘 맞는 모델. 잔차를 순차로 줄이기 때문에
+    # 자치구 x 면적 x 층 같은 깊은 상호작용을 잡는다 (랜덤포레스트는 독립 트리의
+    # 평균이라 그게 뭉개진다).
+    "gradient_boosting": lambda seed: HistGradientBoostingRegressor(
+        max_iter=400, learning_rate=0.1, random_state=seed, early_stopping=False
     ),
 }
 
@@ -50,10 +60,11 @@ class PriceRegressionModel:
 
     def __init__(
         self,
-        name: str = "linear_regression",
+        name: str = "gradient_boosting",
         estimator: RegressorMixin | None = None,
         numeric_features: Sequence[str] = S.REGRESSION_NUMERIC_FEATURES,
         categorical_features: Sequence[str] = S.REGRESSION_CATEGORICAL_FEATURES,
+        log_target: bool = False,
         random_state: int = 42,
     ) -> None:
         features = [*numeric_features, *categorical_features]
@@ -61,9 +72,11 @@ class PriceRegressionModel:
         self.name = name
         self.numeric_features = list(numeric_features)
         self.categorical_features = list(categorical_features)
+        self.log_target = log_target
         self.estimator = (
             estimator if estimator is not None else create_regressor(name, random_state)
         )
+        self.random_state = random_state
         self.pipeline: Pipeline | None = None
         self.metadata: dict[str, Any] = {}
 
@@ -81,17 +94,28 @@ class PriceRegressionModel:
         """학습 데이터의 수치형 변수 [최소, 최대] — 학습 범위 밖 입력 경고에 사용."""
         return dict(self.metadata.get("feature_ranges", {}))
 
+    def _to_model_target(self, price: np.ndarray) -> np.ndarray:
+        """가격(원) → 모델이 맞히는 값. 역변환은 ``_to_price``."""
+        if not self.log_target:
+            return price
+        if (price <= 0).any():
+            raise ValueError("로그 타깃에는 0 이하의 가격을 쓸 수 없습니다.")
+        return np.log(price)
+
+    def _to_price(self, pred: np.ndarray) -> np.ndarray:
+        return np.exp(pred) if self.log_target else pred
+
     def fit(
         self, train: pd.DataFrame, y: pd.Series | np.ndarray | None = None
     ) -> PriceRegressionModel:
         """train: 전처리된 거래 DataFrame. y 생략 시 ``train['price_krw']`` 사용."""
         X = to_model_frame(train, self.feature_columns)
-        target = train[S.REGRESSION_TARGET] if y is None else y
-        target = np.asarray(target, dtype="float64")
+        price = np.asarray(train[S.REGRESSION_TARGET] if y is None else y, dtype="float64")
         if len(X) == 0:
             raise ValueError("학습 데이터가 비어 있습니다.")
-        if len(target) != len(X) or not np.isfinite(target).all():
+        if len(price) != len(X) or not np.isfinite(price).all():
             raise ValueError("정답값(price_krw)의 길이가 맞지 않거나 결측이 있습니다.")
+        target = self._to_model_target(price)
         pipeline = Pipeline(
             [
                 (
@@ -113,6 +137,7 @@ class PriceRegressionModel:
             "trained_at": utc_now_iso(),
             "n_train": int(len(X)),
             "feature_columns": self.feature_columns,
+            "log_target": self.log_target,
             "feature_ranges": ranges,
             "train_date_range": _date_range(train),
         }
@@ -121,7 +146,8 @@ class PriceRegressionModel:
     def predict(self, X: pd.DataFrame) -> np.ndarray:
         if self.pipeline is None:
             raise ModelNotReadyError(f"회귀 모델 '{self.name}' 이 학습되지 않았습니다.")
-        return self.pipeline.predict(to_model_frame(X, self.feature_columns))
+        pred = self.pipeline.predict(to_model_frame(X, self.feature_columns))
+        return self._to_price(pred)
 
     def evaluate(
         self, data: pd.DataFrame, y: pd.Series | np.ndarray | None = None
