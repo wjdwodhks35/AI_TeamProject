@@ -12,11 +12,18 @@
 from __future__ import annotations
 
 import logging
+import math
+import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from uuid import uuid4
 
 import pandas as pd
 from fastapi import FastAPI, HTTPException, Request, status
+from fastapi.exceptions import RequestValidationError
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from apartment_ml import __version__
 from apartment_ml import schemas as S
@@ -30,10 +37,11 @@ from apartment_ml.api.schemas import (
     PricePredictionRequest,
     PricePredictionResponse,
 )
-from apartment_ml.config import get_settings
+from apartment_ml.config import get_cors_origins, get_settings
 from apartment_ml.data.preprocess import add_price_features
 from apartment_ml.models.base import AnomalyDetector, ModelNotReadyError, PricePredictor
 from apartment_ml.scenarios.interest_rate import (
+    ScenarioNotSupportedError,
     build_feature_frame,
     compare_interest_rate_scenario,
     out_of_range_warnings,
@@ -42,6 +50,8 @@ from apartment_ml.scenarios.interest_rate import (
 logger = logging.getLogger(__name__)
 
 NOT_READY_RESPONSES = {
+    422: {"model": ErrorResponse, "description": "입력 검증 또는 시나리오 지원 오류"},
+    500: {"model": ErrorResponse, "description": "서버 또는 모델 처리 실패"},
     status.HTTP_503_SERVICE_UNAVAILABLE: {"model": ErrorResponse, "description": "모델 미준비"},
 }
 
@@ -63,12 +73,12 @@ def _load_models_from_disk() -> tuple[PricePredictor | None, AnomalyDetector | N
     if settings.price_model_path.exists():
         try:
             price = PriceRegressionModel.load(settings.price_model_path)
-        except ModelNotReadyError as exc:
+        except Exception as exc:
             logger.warning("가격 모델 로드 실패: %s", exc)
     if settings.anomaly_model_path.exists():
         try:
             anomaly = AnomalyClassificationModel.load(settings.anomaly_model_path)
-        except ModelNotReadyError as exc:
+        except Exception as exc:
             logger.warning("이상거래 모델 로드 실패: %s", exc)
     return price, anomaly
 
@@ -80,8 +90,12 @@ def create_app(
 ) -> FastAPI:
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-        if load_from_disk and price_model is None and anomaly_model is None:
-            app.state.price_model, app.state.anomaly_model = _load_models_from_disk()
+        if load_from_disk:
+            loaded_price, loaded_anomaly = _load_models_from_disk()
+            if price_model is None:
+                app.state.price_model = loaded_price
+            if anomaly_model is None:
+                app.state.anomaly_model = loaded_anomaly
         yield
 
     app = FastAPI(
@@ -92,6 +106,94 @@ def create_app(
     )
     app.state.price_model = price_model
     app.state.anomaly_model = anomaly_model
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=get_cors_origins(),
+        allow_methods=["GET", "POST"],
+        allow_headers=["Content-Type"],
+        expose_headers=["X-Request-ID"],
+    )
+
+    @app.middleware("http")
+    async def request_log(request: Request, call_next):
+        request.state.request_id = uuid4().hex
+        started = time.perf_counter()
+        response = await call_next(request)
+        response.headers["X-Request-ID"] = request.state.request_id
+        logger.info(
+            "request_id=%s method=%s path=%s status=%s duration_ms=%.1f",
+            request.state.request_id,
+            request.method,
+            request.url.path,
+            response.status_code,
+            (time.perf_counter() - started) * 1000,
+        )
+        return response
+
+    @app.exception_handler(RequestValidationError)
+    async def validation_error(request: Request, exc: RequestValidationError):
+        return JSONResponse(
+            status_code=422,
+            content={
+                "detail": {
+                    "code": "VALIDATION_ERROR",
+                    "message": "요청 입력값을 확인해 주세요.",
+                    "issues": [
+                        {"location": list(e["loc"]), "message": e["msg"], "type": e["type"]}
+                        for e in exc.errors()
+                    ],
+                }
+            },
+        )
+
+    @app.exception_handler(StarletteHTTPException)
+    async def http_error(request: Request, exc: StarletteHTTPException):
+        detail = (
+            exc.detail
+            if isinstance(exc.detail, dict)
+            else {"code": f"HTTP_{exc.status_code}", "message": str(exc.detail)}
+        )
+        return JSONResponse(
+            status_code=exc.status_code, content={"detail": detail}, headers=exc.headers
+        )
+
+    @app.exception_handler(ModelNotReadyError)
+    async def model_not_ready(request: Request, exc: ModelNotReadyError):
+        return JSONResponse(
+            status_code=503,
+            content={
+                "detail": {"code": "MODEL_NOT_READY", "message": "모델이 준비되지 않았습니다."}
+            },
+        )
+
+    @app.exception_handler(Exception)
+    async def prediction_error(request: Request, exc: Exception):
+        logger.error(
+            "request_id=%s stage=backend_or_model path=%s",
+            getattr(request.state, "request_id", "unknown"),
+            request.url.path,
+            exc_info=exc,
+        )
+        headers = {"X-Request-ID": getattr(request.state, "request_id", "unknown")}
+        origin = request.headers.get("origin")
+        if origin in get_cors_origins():
+            headers.update(
+                {
+                    "Access-Control-Allow-Origin": origin,
+                    "Access-Control-Expose-Headers": "X-Request-ID",
+                    "Vary": "Origin",
+                }
+            )
+        return JSONResponse(
+            status_code=500,
+            content={
+                "detail": {
+                    "code": "INTERNAL_ERROR",
+                    "message": "서버 처리에 실패했습니다.",
+                }
+            },
+            headers=headers,
+        )
 
     def _price_model(request: Request) -> PricePredictor:
         model = request.app.state.price_model
@@ -121,7 +223,12 @@ def create_app(
     def predict_price(body: PricePredictionRequest, request: Request) -> PricePredictionResponse:
         model = _price_model(request)
         frame = build_feature_frame(body)
-        pred = float(model.predict(frame)[0])
+        predictions = model.predict(frame)
+        if getattr(predictions, "shape", None) != (1,):
+            raise RuntimeError("Price predictions must have shape (1,)")
+        pred = float(predictions[0])
+        if not math.isfinite(pred):
+            raise RuntimeError("Price prediction must be finite")
         warnings = out_of_range_warnings(model, frame)
         if pred <= 0:
             warnings.append(
@@ -149,14 +256,19 @@ def create_app(
         frame = build_feature_frame(features)
         frame[S.PRICE_KRW] = pd.array([body.price_krw], dtype="Int64")
         frame = add_price_features(frame)
-        score = float(model.predict_proba(frame)[0])
+        probabilities = model.predict_proba(frame)
+        if getattr(probabilities, "shape", None) != (1,):
+            raise RuntimeError("Anomaly probabilities must have shape (1,)")
+        score = float(probabilities[0])
         threshold = float(getattr(model, "threshold", 0.5))
+        if not (0 <= score <= 1 and 0 <= threshold <= 1):
+            raise RuntimeError("Invalid anomaly probability or threshold")
 
-        warnings: list[str] = []
+        warnings: list[str] = ["이 결과는 이상거래 의심 판정이며 위법 여부를 확정하지 않습니다."]
         reference = gap = None
         price_model = request.app.state.price_model
         if price_model is not None and price_model.is_fitted:
-            reference = round(float(price_model.predict(frame)[0]))
+            reference = round(float(price_model.predict(build_feature_frame(features))[0]))
             if reference > 0:
                 gap = (body.price_krw - reference) / reference * 100.0
         else:
@@ -185,7 +297,7 @@ def create_app(
             result = compare_interest_rate_scenario(
                 model, body.features, body.base_rate_before, body.base_rate_after
             )
-        except ValueError as exc:
+        except ScenarioNotSupportedError as exc:
             raise HTTPException(
                 status_code=422,
                 detail={"code": "SCENARIO_NOT_SUPPORTED", "message": str(exc)},

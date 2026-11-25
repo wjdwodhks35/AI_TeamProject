@@ -86,6 +86,8 @@ pytest -q
 CI(GitHub Actions)는 Python 3.11/3.12/3.13에서 위 명령과 smoke pipeline을 실행합니다. API 키는 필요 없습니다.
 
 ## 문서
+- [BACKEND_GUIDE](docs/BACKEND_GUIDE.md): 백엔드 실행, 모델 계약, 프론트엔드 인수인계
+- [BACKEND_REPORT](docs/BACKEND_REPORT.md): 구현 범위와 검증 결과
 - [ARCHITECTURE](docs/ARCHITECTURE.md): 데이터 흐름, 모듈 의존 관계
 - [DATA_SCHEMA](docs/DATA_SCHEMA.md): 공통 필드, 단위, 결측·중복 처리, 시점 정합성
 - [API_CONTRACT](docs/API_CONTRACT.md): 엔드포인트, 요청/응답, 오류 코드

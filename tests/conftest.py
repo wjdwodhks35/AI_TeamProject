@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import socket
+import threading
 
 import pandas as pd
 import pytest
@@ -10,9 +11,24 @@ import pytest
 
 @pytest.fixture(autouse=True)
 def _block_network(monkeypatch: pytest.MonkeyPatch) -> None:
+    original_connect = socket.socket.connect
+    original_socketpair = socket.socketpair
+    local = threading.local()
+
     def guard(*args, **kwargs):
+        if getattr(local, "creating_socketpair", False):
+            return original_connect(*args, **kwargs)
         raise RuntimeError("테스트에서 외부 네트워크 호출은 금지되어 있습니다.")
 
+    def local_socketpair(*args, **kwargs):
+        # Windows asyncio의 내부 wakeup socketpair만 허용한다.
+        local.creating_socketpair = True
+        try:
+            return original_socketpair(*args, **kwargs)
+        finally:
+            local.creating_socketpair = False
+
+    monkeypatch.setattr(socket, "socketpair", local_socketpair)
     monkeypatch.setattr(socket.socket, "connect", guard)
     monkeypatch.setattr(socket, "create_connection", guard)
 
