@@ -42,7 +42,7 @@ def test_regression_fit_predict_save_load(train_df, tmp_path, name):
     pred = model.predict(train_df)
     assert pred.shape == (len(train_df),)
     metrics = model.evaluate(train_df)
-    assert set(metrics) == {"mae", "rmse", "n"}
+    assert set(metrics) == {"mae", "rmse", "r2", "mape", "n"}
     assert "base_rate" in model.feature_ranges
     path = model.save(tmp_path / "m.joblib")
     loaded = PriceRegressionModel.load(path)
