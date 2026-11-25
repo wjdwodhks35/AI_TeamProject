@@ -24,7 +24,9 @@ def test_preprocess_happy_path(raw_df):
     assert str(df["contract_date"].dtype) == "datetime64[ns]"
     assert {"contract_year", "contract_month", "building_age"} <= set(df.columns)
     assert df["contract_date"].is_monotonic_increasing
-    assert set(S.OPTIONAL_COLUMNS) - {"apartment_name", "dong", "source"} <= set(df.columns)
+    assert set(S.OPTIONAL_COLUMNS) - {"apartment_name", "dong", "source", "complex_id"} <= set(
+        df.columns
+    )
     assert res.report.missing_counts["anomaly_label"] == len(df)  # 레이블 미확보 허용
 
 

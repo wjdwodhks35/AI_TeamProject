@@ -231,11 +231,18 @@ def add_price_features(df: pd.DataFrame) -> pd.DataFrame:
 def ensure_optional_columns(df: pd.DataFrame) -> pd.DataFrame:
     """선택 컬럼이 없으면 null 로 채워 스키마 모양을 통일한다."""
     out = df.copy()
-    for col in (S.BUILT_YEAR, S.ANOMALY_LABEL, *S.REGULATION_COLUMNS):
+    for col in (
+        S.BUILT_YEAR,
+        S.ANOMALY_LABEL,
+        *S.REGULATION_COLUMNS,
+        *S.NATIONAL_REGULATION_COLUMNS,
+        *S.DEAL_FEATURE_COLUMNS,
+    ):
         if col not in out.columns:
             out[col] = pd.Series(pd.NA, index=out.index, dtype="Int64")
-    if S.BASE_RATE not in out.columns:
-        out[S.BASE_RATE] = np.nan
+    for col in (*S.RATE_COLUMNS, *S.RATE_CHANGE_COLUMNS, *S.REGULATION_SCORE_COLUMNS):
+        if col not in out.columns:
+            out[col] = np.nan
     return out
 
 
@@ -310,3 +317,192 @@ def build_feature_preprocessor(
         remainder="drop",
         verbose_feature_names_out=False,
     )
+
+
+# ---------------------------------------------------------------------------
+# 거래 특성 (국토교통부 상세 자료)
+# ---------------------------------------------------------------------------
+
+DIRECT_DEAL_TEXT = "직거래"
+BROKER_DEAL_TEXT = "중개거래"
+AREA_BAND = "_area_band"  # 기준가 계산용 임시 컬럼 (10㎡ 단위)
+
+
+def add_deal_features(df: pd.DataFrame) -> pd.DataFrame:
+    """상세 자료의 거래유형·중개사 소재지·토지임대부를 숫자 컬럼으로 만든다.
+
+    - ``is_direct_deal``: 직거래 1, 중개거래 0, 표기 없으면 null
+      (2021년 자료에는 거래유형이 거의 없다)
+    - ``agent_location``: 0 소재지 없음 / 1 같은 자치구 / 2 다른 자치구
+      중개사가 다른 구에 있는 거래는 해제율이 더 높았다 (8.1% 대 5.2%)
+    - ``land_leasehold``: 토지임대부 1. 땅값이 빠져 같은 평형이라도 훨씬 싸므로
+      이 값을 넣지 않으면 전부 '이상하게 싼 거래' 로 잡힌다
+    """
+    out = df.copy()
+
+    if "deal_type" in out.columns:
+        text = out["deal_type"].astype("string").str.strip()
+        direct = pd.Series(pd.NA, index=out.index, dtype="Int64")
+        direct[text == DIRECT_DEAL_TEXT] = 1
+        direct[text == BROKER_DEAL_TEXT] = 0
+        out[S.IS_DIRECT_DEAL] = direct
+
+    if "agent_district" in out.columns and S.DISTRICT in out.columns:
+        agent = out["agent_district"].astype("string").fillna("").str.strip()
+        district = out[S.DISTRICT].astype("string").fillna("")
+        same = [bool(d) and bool(a) and d in a for d, a in zip(district, agent, strict=True)]
+        location = np.where(agent == "", 0, np.where(same, 1, 2))
+        out[S.AGENT_LOCATION] = pd.Series(location, index=out.index, dtype="Int64")
+
+    if "land_leasehold_raw" in out.columns:
+        raw = out["land_leasehold_raw"].astype("string").str.strip().str.upper()
+        leasehold = pd.Series(pd.NA, index=out.index, dtype="Int64")
+        leasehold[raw == "Y"] = 1
+        leasehold[raw == "N"] = 0
+        out[S.LAND_LEASEHOLD] = leasehold
+
+    return out
+
+
+# ---------------------------------------------------------------------------
+# 기준가 (이상거래 레이블의 재료)
+# ---------------------------------------------------------------------------
+# 좁은 그룹부터 보고 표본이 모자라면 넓은 그룹으로 올라간다.
+# 실제 수집 데이터에서 '같은 단지·같은 평형' 만 쓰면 45.7% 밖에 기준을 못 만들었고,
+# 네 단계를 두면 92.4% 가 됐다.
+
+PEER_TIERS: tuple[tuple[int, tuple[str, ...], int], ...] = (
+    (1, (S.COMPLEX_ID, AREA_BAND), 3),
+    (2, (S.COMPLEX_ID,), 3),
+    (3, (S.DONG, AREA_BAND), 5),
+    (4, (S.DISTRICT, AREA_BAND), 5),
+)
+AREA_BAND_WIDTH = 10.0
+
+
+def _peer_one_tier(
+    df: pd.DataFrame, keys: tuple[str, ...], min_count: int, period: str
+) -> pd.Series:
+    """직전 기간의 같은 그룹 ㎡당 가격 중앙값 x 이 거래의 면적.
+
+    가격 중앙값을 그대로 쓰면 안 된다. 같은 단지라도 59㎡와 115㎡는 가격이 두 배
+    차이나므로, 단지 중앙값을 기준으로 삼으면 작은 평형은 전부 싸게, 큰 평형은
+    전부 비싸게 잡힌다. ㎡당 가격으로 기준을 만들고 면적을 다시 곱한다.
+    """
+    work = df.copy()
+    work["_period"] = work[S.CONTRACT_DATE].dt.to_period(period)
+    work["_per_m2"] = work[S.PRICE_KRW].astype("float64") / work[S.AREA_M2]
+
+    grouped = (
+        work.groupby([*keys, "_period"], dropna=True)["_per_m2"]
+        .agg(_median="median", _count="size")
+        .reset_index()
+    )
+    grouped = grouped.loc[grouped["_count"] >= min_count].copy()
+    grouped["_period"] = grouped["_period"] + 1  # 다음 기간에 붙인다 (미래를 보지 않는다)
+
+    merged = work.merge(grouped[[*keys, "_period", "_median"]], on=[*keys, "_period"], how="left")
+    merged.index = df.index
+    return merged["_median"] * df[S.AREA_M2]
+
+
+def add_peer_price(df: pd.DataFrame, *, period: str = "Q") -> pd.DataFrame:
+    """직전 기간의 같은 조건 시세를 ``peer_median_price_krw`` 로 붙인다.
+
+    좁은 그룹부터 보고 표본이 모자라면 넓은 그룹으로 올라가며, 몇 단계에서 만들었는지를
+    ``peer_tier`` 에 남긴다. 단계가 넓을수록 기준 자체가 흔들리므로 레이블을 달 때
+    단계를 봐야 한다 (``label_anomalies`` 참고).
+
+    직전 기간만 보기 때문에 미래 정보가 들어가지 않는다. 학습형 전처리가 아니라
+    시점 기준 집계이므로 분할 전에 계산해도 누출이 생기지 않는다.
+    """
+    required = [S.CONTRACT_DATE, S.AREA_M2, S.PRICE_KRW, S.DISTRICT]
+    missing = [c for c in required if c not in df.columns]
+    if missing:
+        raise SchemaValidationError(f"기준가 계산에 필요한 컬럼이 없습니다: {missing}")
+
+    out = df.copy()
+    out[AREA_BAND] = (out[S.AREA_M2] // AREA_BAND_WIDTH * AREA_BAND_WIDTH).astype("float64")
+
+    peer = pd.Series(np.nan, index=out.index, dtype="float64")
+    tier = pd.Series(0, index=out.index, dtype="Int64")
+    for number, keys, min_count in PEER_TIERS:
+        if any(k not in out.columns for k in keys):
+            continue  # complex_id 나 dong 이 없는 데이터도 받을 수 있게 한다
+        candidate = _peer_one_tier(out, keys, min_count, period)
+        fill = peer.isna() & candidate.notna()
+        peer[fill] = candidate[fill]
+        tier[fill] = number
+
+    out[S.PEER_MEDIAN_PRICE_KRW] = peer
+    out[S.PEER_TIER] = tier
+    out[S.PRICE_RATIO] = out[S.PRICE_KRW].astype("float64") / peer
+    return out.drop(columns=[AREA_BAND])
+
+
+# ---------------------------------------------------------------------------
+# 이상거래 레이블 (후보 — ML 담당자와 정의 확정 전)
+# ---------------------------------------------------------------------------
+# 기준가 단계마다 기준이 흔들리는 정도가 다르다. 실제 수집 데이터에서 시세비율의
+# 사분위폭이 1단계 0.077, 2단계 0.226, 3단계 0.313, 4단계 0.454 였다.
+# 자치구 단위(4단계)로 판정하면 이상으로 뽑힌 거래의 직거래 비율이 그 구 평균과
+# 같아져(배수 1.0) 신호가 아니라 잡음이었다. 그래서 1·2단계만 레이블을 단다.
+
+DEFAULT_ANOMALY_THRESHOLDS: dict[int, float] = {1: 0.20, 2: 0.30}
+
+
+ANOMALY_DIRECTIONS = ("below", "both")
+
+
+def label_anomalies(
+    df: pd.DataFrame,
+    *,
+    thresholds: dict[int, float] | None = None,
+    direction: str = "both",
+) -> pd.DataFrame:
+    """기준가에서 많이 벗어난 거래에 ``anomaly_label`` 을 단다.
+
+    주의: 레이블 정의는 머신러닝 담당자와 합의해 확정한다 (docs/CONTRIBUTING.md).
+    이 함수는 확정 전 후보이며, 호출하지 않으면 ``anomaly_label`` 은 null 로 남는다.
+    ``configs/settings.yaml`` 의 ``classification.training_enabled`` 도 함께 확인한다.
+
+    ``thresholds`` 는 기준가 단계별 허용 범위다. 기본값은 1단계 20%, 2단계 30% 이고,
+    여기에 없는 단계는 레이블을 달지 않는다 (null 로 남긴다).
+
+    이 레이블이 뜻하는 것은 **"같은 조건의 주변 거래에서 가격이 크게 벗어났다"** 이지
+    "불법이다" 가 아니다. 싸게 팔린 데에도 비싸게 팔린 데에도 정상적인 이유가 있을 수 있다.
+
+    ``direction``
+        ``"both"`` (기본) 양쪽으로 벗어난 거래를 모두 본다.
+        ``"below"``       기준가보다 **싼** 거래만 본다.
+
+    두 방향은 성격이 다르다. 레이블을 만들 때 쓰지 않은 직거래 비율로 보면
+    (전체 2.74% 기준):
+
+        1단계 싸게   1,172건  직거래 67.03%  = 24.4배
+        1단계 비싸게 2,121건  직거래  3.88%  =  1.4배
+        2단계 싸게   1,527건  직거래 23.42%  =  8.5배
+        2단계 비싸게 2,759건  직거래  1.36%  =  0.5배   <- 평균보다 낮다
+
+    싼 쪽에는 직거래가 몰려 있고 비싼 쪽에는 그렇지 않다. 해제율과 단기 재매매로도
+    같은 결과가 나왔다 (docs/DATA_QUALITY.md). 비싼 쪽이 왜 갈리지 않는지는 설명하지
+    못한다. 한 레이블로 묶으면 성격이 다른 두 집단이 섞이므로, 모델 담당자는
+    ``direction="below"`` 로 만든 레이블과 성능을 비교해 보는 것이 좋다.
+    """
+    if direction not in ANOMALY_DIRECTIONS:
+        raise ValueError(f"direction 은 {ANOMALY_DIRECTIONS} 중 하나여야 합니다: {direction!r}")
+    if S.PRICE_RATIO not in df.columns or S.PEER_TIER not in df.columns:
+        raise SchemaValidationError("먼저 add_peer_price 로 기준가를 만들어야 합니다.")
+
+    limits = DEFAULT_ANOMALY_THRESHOLDS if thresholds is None else thresholds
+    out = df.copy()
+    label = pd.Series(pd.NA, index=out.index, dtype="Int64")
+    for tier, limit in limits.items():
+        target = (out[S.PEER_TIER] == tier) & out[S.PRICE_RATIO].notna()
+        ratio = out.loc[target, S.PRICE_RATIO]
+        hit = ratio < 1 - limit
+        if direction == "both":
+            hit = hit | (ratio > 1 + limit)
+        label[target] = hit.astype("Int64")
+    out[S.ANOMALY_LABEL] = label
+    return out
