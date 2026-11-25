@@ -15,19 +15,19 @@ from typing import Any
 import numpy as np
 import pandas as pd
 from sklearn.base import RegressorMixin
+from sklearn.compose import ColumnTransformer
 from sklearn.ensemble import HistGradientBoostingRegressor, RandomForestRegressor
+from sklearn.impute import SimpleImputer
 from sklearn.linear_model import LinearRegression
 from sklearn.pipeline import Pipeline
+from sklearn.preprocessing import OneHotEncoder, OrdinalEncoder, StandardScaler
 from sklearn.tree import DecisionTreeRegressor
 
 from apartment_ml import schemas as S
-from apartment_ml.data.preprocess import (
-    assert_no_forbidden_features,
-    build_feature_preprocessor,
-    to_model_frame,
-)
+from apartment_ml.data.preprocess import assert_no_forbidden_features, to_model_frame
 from apartment_ml.evaluation.metrics import regression_metrics
 from apartment_ml.models.base import ModelNotReadyError, load_artifact, save_artifact, utc_now_iso
+from apartment_ml.models.location_price import LocationPriceEncoder
 
 REGRESSOR_FACTORIES: dict[str, Callable[[int], RegressorMixin]] = {
     "linear_regression": lambda seed: LinearRegression(),
@@ -64,14 +64,16 @@ class PriceRegressionModel:
         estimator: RegressorMixin | None = None,
         numeric_features: Sequence[str] = S.REGRESSION_NUMERIC_FEATURES,
         categorical_features: Sequence[str] = S.REGRESSION_CATEGORICAL_FEATURES,
-        log_target: bool = False,
+        location_features: Sequence[str] = S.REGRESSION_LOCATION_FEATURES,
+        log_target: bool = True,
         random_state: int = 42,
     ) -> None:
-        features = [*numeric_features, *categorical_features]
+        features = [*numeric_features, *categorical_features, *location_features]
         assert_no_forbidden_features(features, S.REGRESSION_FORBIDDEN_FEATURES)
         self.name = name
         self.numeric_features = list(numeric_features)
         self.categorical_features = list(categorical_features)
+        self.location_features = list(location_features)
         self.log_target = log_target
         self.estimator = (
             estimator if estimator is not None else create_regressor(name, random_state)
@@ -83,7 +85,9 @@ class PriceRegressionModel:
     # -- 계약 ---------------------------------------------------------------
     @property
     def feature_columns(self) -> list[str]:
-        return [*self.numeric_features, *self.categorical_features]
+        """파이프라인에 넣는 컬럼. 위치 컬럼은 인코더가 숫자로 바꿔 쓰므로 함께 받는다."""
+        extra = [c for c in self.location_features if c not in self.categorical_features]
+        return [*self.numeric_features, *self.categorical_features, *extra]
 
     @property
     def is_fitted(self) -> bool:
@@ -93,6 +97,59 @@ class PriceRegressionModel:
     def feature_ranges(self) -> dict[str, tuple[float, float]]:
         """학습 데이터의 수치형 변수 [최소, 최대] — 학습 범위 밖 입력 경고에 사용."""
         return dict(self.metadata.get("feature_ranges", {}))
+
+    def _build_pipeline(self) -> Pipeline:
+        """전처리 + 추정기. 전처리는 반드시 학습 데이터로만 fit 된다 (누출 방지).
+
+        범주형(자치구) 처리는 추정기에 따라 다르다. ``HistGradientBoosting`` 은 범주형을
+        원-핫 없이 직접 다룰 수 있고, 그게 훨씬 낫다. 트리 한 개의 잎이 31개뿐이라
+        원-핫 0/1 변수 25개로는 자치구 하나를 집어내는 데 질문을 여러 번 써야 하는데,
+        범주형으로 주면 '강남·서초·송파 vs 나머지'처럼 한 번에 묶어 쪼갤 수 있다.
+        측정: 위치 변수 없이 자치구만 쓸 때 R2 0.475(원-핫) vs 0.807(직접).
+        """
+        native_categories = isinstance(self.estimator, HistGradientBoostingRegressor)
+        encoder: object = (
+            OrdinalEncoder(handle_unknown="use_encoded_value", unknown_value=-1)
+            if native_categories
+            else OneHotEncoder(handle_unknown="ignore")
+        )
+        steps: list[tuple[str, object, list[str]]] = [
+            (
+                "num",
+                Pipeline(
+                    [
+                        ("impute", SimpleImputer(strategy="median", keep_empty_features=True)),
+                        ("scale", StandardScaler()),
+                    ]
+                ),
+                self.numeric_features,
+            ),
+            (
+                "cat",
+                Pipeline(
+                    [("impute", SimpleImputer(strategy="most_frequent")), ("encode", encoder)]
+                ),
+                self.categorical_features,
+            ),
+        ]
+        if self.location_features:
+            steps.append(
+                (
+                    "loc",
+                    LocationPriceEncoder(
+                        levels=self.location_features, random_state=self.random_state
+                    ),
+                    self.location_features,
+                )
+            )
+        if native_categories:
+            # 출력 컬럼 순서는 num -> cat -> loc 이므로 범주형 위치가 고정된다.
+            start = len(self.numeric_features)
+            self.estimator.set_params(
+                categorical_features=list(range(start, start + len(self.categorical_features)))
+            )
+        preprocess = ColumnTransformer(steps, remainder="drop", verbose_feature_names_out=False)
+        return Pipeline([("preprocess", preprocess), ("model", self.estimator)])
 
     def _to_model_target(self, price: np.ndarray) -> np.ndarray:
         """가격(원) → 모델이 맞히는 값. 역변환은 ``_to_price``."""
@@ -116,15 +173,7 @@ class PriceRegressionModel:
         if len(price) != len(X) or not np.isfinite(price).all():
             raise ValueError("정답값(price_krw)의 길이가 맞지 않거나 결측이 있습니다.")
         target = self._to_model_target(price)
-        pipeline = Pipeline(
-            [
-                (
-                    "preprocess",
-                    build_feature_preprocessor(self.numeric_features, self.categorical_features),
-                ),
-                ("model", self.estimator),
-            ]
-        )
+        pipeline = self._build_pipeline()
         pipeline.fit(X, target)
         self.pipeline = pipeline
         ranges = {
@@ -137,6 +186,7 @@ class PriceRegressionModel:
             "trained_at": utc_now_iso(),
             "n_train": int(len(X)),
             "feature_columns": self.feature_columns,
+            "location_features": self.location_features,
             "log_target": self.log_target,
             "feature_ranges": ranges,
             "train_date_range": _date_range(train),

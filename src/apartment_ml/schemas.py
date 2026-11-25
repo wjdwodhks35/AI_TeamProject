@@ -369,6 +369,12 @@ REGRESSION_NUMERIC_FEATURES: tuple[str, ...] = (
     *DEAL_FEATURE_COLUMNS,
 )
 REGRESSION_CATEGORICAL_FEATURES: tuple[str, ...] = (DISTRICT,)
+# 위치 변수 — **회귀 전용**. 범주로 넣지 않고 '그 위치의 과거 로그 평당가'로 요약해
+# 쓴다 (models/location_price.py). 동이 332개, 단지가 7,600개가 넘어 원-핫으로는
+# 변수가 폭발하고, HistGradientBoosting 의 범주형 직접 처리는 255개까지만 된다.
+# 분류에는 넣지 않는다: 분류 입력에는 price_krw 가 있어서 단지 수준 기준가가 함께
+# 들어가면 price_ratio 를 역산해 이상거래 레이블을 그대로 복원할 수 있다.
+REGRESSION_LOCATION_FEATURES: tuple[str, ...] = (DISTRICT, DONG, COMPLEX_ID)
 REGRESSION_FEATURES: tuple[str, ...] = (
     *REGRESSION_NUMERIC_FEATURES,
     *REGRESSION_CATEGORICAL_FEATURES,
