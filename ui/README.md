@@ -1,0 +1,60 @@
+# UI
+
+빌드 도구 없는 정적 화면입니다. 백엔드 API(`http://127.0.0.1:8000`)를 호출합니다.
+
+## 실행 1: 리눅스 배포 (권장)
+
+저장소 루트에서:
+
+```bash
+./deploy.sh
+```
+
+API 와 UI 를 **8010 한 포트**로 함께 제공합니다. 같은 출처라서 CORS 설정이 필요 없습니다.
+접속은 <http://localhost:8010>, API 문서는 `/docs` 입니다.
+
+## 실행 2: 윈도우 개발 (터미널 2개)
+
+```powershell
+# 1) 백엔드
+$env:APARTMENT_ML_CORS_ORIGINS = "http://localhost:5173"
+.\.venv\Scripts\python.exe -m uvicorn apartment_ml.api.main:app --reload
+
+# 2) 프론트엔드
+python -m http.server 5173 --directory ui
+```
+
+브라우저에서 <http://localhost:5173> 을 엽니다. `api.js` 가 출처 포트를 보고 백엔드
+주소(8000)를 자동으로 가리킵니다.
+
+`index.html` 파일을 더블클릭해서 열면 안 됩니다. `file://` 출처는 백엔드 CORS 허용
+목록에 없어서 모든 요청이 막힙니다.
+
+## 구성
+
+| 파일 | 역할 |
+|---|---|
+| `index.html` | 공통 입력 폼 + 기능 탭 3개 |
+| `api.js` | API 호출과 오류 변환 (`ApiError`) |
+| `app.js` | 입력 수집, 결과·오류 렌더링 |
+| `mock.js` | 개발용 가짜 응답 (모델 없을 때 화면 확인용) |
+| `style.css` | 최소 스타일 |
+
+## 개발용 가짜 응답
+
+학습된 모델이 없으면 예측 엔드포인트는 503 `MODEL_NOT_READY`만 돌려줍니다. 성공 화면을
+확인하려면 상단의 '개발용 가짜 응답'을 켭니다. 켜면 빨간 배너가 뜨고, 그 숫자는 모델
+예측이 아니므로 성능 수치로 쓸 수 없습니다. 실제 모델이 배포되면 끄고 확인합니다.
+
+## API 주소
+
+`api.js` 의 `resolveApiBase()` 가 자동으로 정합니다.
+
+| 상황 | API 주소 |
+|---|---|
+| 8010 등 같은 출처에서 서비스 (`deploy.sh`) | 상대 경로 |
+| 3000 / 5173 에서 UI 만 띄운 개발 환경 | `http://127.0.0.1:8000` |
+| `?api=http://호스트:포트` 쿼리를 붙인 경우 | 그 주소 |
+
+다른 출처를 직접 쓰려면 백엔드의 `APARTMENT_ML_CORS_ORIGINS` 에 이 페이지의 출처를
+추가해야 합니다.

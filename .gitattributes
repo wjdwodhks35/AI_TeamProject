@@ -1,0 +1,3 @@
+# 개발은 Windows, 배포는 Linux. 셸 스크립트의 줄바꿈은 반드시 LF 여야 한다.
+# CRLF 가 섞이면 리눅스에서 ./deploy.sh 가 "bad interpreter" 로 실패한다.
+*.sh text eol=lf
