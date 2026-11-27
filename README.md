@@ -77,6 +77,8 @@ curl http://127.0.0.1:8000/health
 ```
 학습된 모델 파일(`models/price_model.joblib` 등)이 없으면, 예측 엔드포인트는 **503 `MODEL_NOT_READY`** 를 반환합니다.
 
+승인된 레이블을 확보하면 `scripts/train_anomaly.py`로 이상거래 분류 모델을 학습할 수 있습니다. [학습 및 백엔드 연동](docs/MODEL_PLAN.md#학습-및-백엔드-연동)
+
 ## 테스트 및 정적 검사
 ```bash
 ruff check .

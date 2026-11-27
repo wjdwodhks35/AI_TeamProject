@@ -15,6 +15,7 @@ from typing import Literal
 
 from sklearn.ensemble import VotingClassifier
 
+from apartment_ml import schemas as S
 from apartment_ml.models.classification import AnomalyClassificationModel, create_classifier
 
 DEFAULT_MEMBERS: tuple[str, ...] = ("decision_tree", "random_forest", "hist_gradient_boosting")
@@ -41,6 +42,8 @@ def build_voting_model(
     voting: Literal["hard", "soft"] = "soft",
     weights: Sequence[float] | None = None,
     random_state: int = 42,
+    *,
+    numeric_features: Sequence[str] = S.CLASSIFICATION_NUMERIC_FEATURES,
 ) -> AnomalyClassificationModel:
     """공통 래퍼로 감싼 (미학습) Voting 앙상블. predict_proba 를 쓰려면 soft voting 필요."""
     if voting != "soft":
@@ -48,5 +51,6 @@ def build_voting_model(
     return AnomalyClassificationModel(
         name="voting_" + "+".join(members),
         estimator=build_voting_classifier(members, voting, weights, random_state),
+        numeric_features=numeric_features,
         random_state=random_state,
     )

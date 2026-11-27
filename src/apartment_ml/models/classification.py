@@ -130,7 +130,10 @@ class AnomalyClassificationModel:
             [
                 (
                     "preprocess",
-                    build_feature_preprocessor(self.numeric_features, self.categorical_features),
+                    # HistGradientBoostingClassifier requires dense input, including in Voting.
+                    build_feature_preprocessor(
+                        self.numeric_features, self.categorical_features, sparse_threshold=0.0
+                    ),
                 ),
                 ("model", self.estimator),
             ]

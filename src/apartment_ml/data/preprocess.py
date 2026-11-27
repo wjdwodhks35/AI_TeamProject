@@ -296,6 +296,8 @@ def build_feature_preprocessor(
     numeric_features: Sequence[str],
     categorical_features: Sequence[str],
     scale_numeric: bool = True,
+    *,
+    sparse_threshold: float = 0.3,
 ) -> ColumnTransformer:
     """결측 대체 + 스케일링 + 원-핫 인코딩. 반드시 Pipeline 안에서 train 데이터로만 fit 할 것."""
     numeric_steps: list[tuple[str, object]] = [
@@ -315,6 +317,7 @@ def build_feature_preprocessor(
             ("cat", categorical, list(categorical_features)),
         ],
         remainder="drop",
+        sparse_threshold=sparse_threshold,
         verbose_feature_names_out=False,
     )
 

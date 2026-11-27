@@ -21,7 +21,7 @@
 | 구분 | 내용 |
 |---|---|
 | 정답값 | `anomaly_label` (0 = 정상, 1 = 의심) — **미확보** |
-| 입력 변수 | `schemas.CLASSIFICATION_FEATURES` (회귀 입력 + `price_krw`, `price_per_m2`) |
+| 입력 변수 | 자치구, 전용면적, 층, 건축연도, 건물연식, 계약 연·월, 기준금리, 자치구 규제 3종, 거래가격, ㎡당 가격 |
 | 개별 모델 | `DecisionTreeClassifier`, `RandomForestClassifier`, `HistGradientBoostingClassifier` (Boosting) |
 | 앙상블 | `VotingClassifier` (soft voting) — `ensemble.build_voting_model()` |
 | 지표 | Precision, Recall, F1, Confusion Matrix (`classification_metrics`) |
@@ -33,14 +33,20 @@
   1. 공식 자료에서 확인된 사례: 해제(취소)된 거래, 국토부·지자체 조사로 적발된 사례가 공개된 경우
   2. 규칙 기반 레이블: 예) 같은 단지·면적·기간의 시세에서 크게 벗어난 거래. 이 경우 모델이 결국 *규칙을 재현*하게 된다는 한계를 문서화해야 합니다.
   3. 비지도 이상탐지(IsolationForest 등)로 방향을 바꾸는 방안. 범위가 바뀌므로 지도교수 및 팀과 협의가 필요합니다.
-- 기준이 확정되면 다음 순서로 진행합니다: 이 문서에 정의 기록 → `settings.yaml`의 `classification.training_enabled: true` → 학습 코드에서 `training_enabled=settings.classification_training_enabled`를 전달
-- 클래스 불균형이 예상되므로 `class_weight`, 임계값(`threshold`) 조정, PR-AUC 같은 보조 지표를 검토합니다.
-- 기준가격(`reference_price_krw`)을 분류 입력으로 쓴다면, 학습 데이터에 대해서는 시간순 out-of-fold 예측값을 사용해야 합니다.
+### 학습 및 백엔드 연동
 
-### Voting 앙상블 적용 계획
-1. 개별 모델 3종을 같은 train 데이터로 학습하고, valid 데이터에서 하이퍼파라미터와 임계값을 정합니다.
-2. soft voting(확률 평균)으로 결합합니다. 가중치는 valid 성능을 기준으로 정합니다.
-3. test 데이터에서는 개별 모델 3종과 앙상블을 **한 번만** 평가해 같은 지표로 비교합니다.
+1. 데이터 담당자와 레이블 출처 및 판정 기준을 확정한 뒤, 실제 거래가 담긴 전처리 CSV의 `anomaly_label`에 승인된 값을 제공받습니다. `0`은 정상, `1`은 이상거래 의심, 빈 값은 미판정입니다. 저장소의 `TEST_ONLY` 샘플 122행은 모두 미판정입니다. `scripts/build_dataset.py --label`의 가격 편차 규칙은 팀 검토가 필요한 후보입니다.
+2. `configs/settings.yaml`에서 `classification.training_enabled`를 `true`로 설정하고 저장소 루트에서 실행합니다. `--label-source`에는 실제 레이블 출처와 승인된 기준을 적습니다.
+
+   ```bash
+   python scripts/train_anomaly.py --data data/processed/training_dataset.csv --label-source "<승인된 레이블 출처와 기준>"
+   ```
+
+3. 전체 거래를 계약일 기준으로 분할한 뒤 구간별로 레이블이 있는 행을 사용합니다. 각 구간에서 정상과 의심 거래가 모두 필요합니다. 결측 대체 및 인코딩은 학습 구간에서만 적합합니다.
+4. 개별 모델 3종과 동일 가중치 soft voting에 공통 임계값 0.5를 사용합니다. 검증 F1이 가장 높은 모델을 선택합니다. 동률이면 Recall, Precision, 모델 선언 순서로 결정합니다. 선택 후 테스트 구간에서 네 모델의 Precision, Recall, F1 및 혼동행렬을 계산합니다. 행렬의 행은 실제값, 열은 예측값이며 순서는 `[0, 1]`입니다.
+5. 기본 출력은 `models/anomaly_model.joblib`와 `models/anomaly_model_metrics.json`입니다. joblib에는 선택된 모델과 전처리기가 들어갑니다. JSON에는 모델별 검증·테스트 지표, 구간별 계약일 범위, 클래스별 건수 및 미판정 건수, 레이블 출처가 들어갑니다.
+
+API 서버는 시작할 때 설정된 모델 파일을 불러옵니다. [API 계약](API_CONTRACT.md)의 `POST /predict/anomaly`에 거래 조건과 원 단위 실제 거래가격 `price_krw`를 보내면 `is_suspicious`, `suspicion_score`, `threshold`, `model_name`을 반환합니다. 파이썬에서는 `AnomalyClassificationModel.load(path)`로 모델을 불러오고, 해당 모델의 `feature_columns`를 포함한 DataFrame에 `predict` 또는 `predict_proba`를 호출할 수 있습니다. 학습 입력은 API 요청에서 제공하거나 파생할 수 있는 변수로 구성합니다.
 
 ## 3. 시간순 검증
 - 분할: `evaluation.split.time_based_split` (비율, 기본 70/15/15) 또는 `split_by_dates` (경계 날짜 지정)
