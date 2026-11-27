@@ -43,6 +43,13 @@ MIN_BASE_RATE = -1.0
 MAX_BASE_RATE = 20.0
 MAX_NAME_LENGTH = 60  # 동명·단지 일련번호 등 짧은 문자열 입력 상한
 
+# 계약일 허용 범위. 국토교통부 실거래가 공개는 2006년 거래분부터이므로 그 앞은
+# 존재할 수 없는 날짜다. 뒤로는 1년까지만 받는다 - 그보다 먼 미래는 '이 조건이 지금
+# 얼마인가' 가 아니라 전망이고, 그건 /forecast/price 가 구간과 함께 답한다.
+# 범위 안이어도 학습 구간 밖이면 응답 warnings 에 외삽이라고 적힌다.
+MIN_CONTRACT_DATE = date(2006, 1, 1)
+MAX_CONTRACT_DATE_YEARS_AHEAD = 1
+
 # 금액 단위: 국토교통부 원본은 '만원' 단위 → 내부는 '원(KRW)' 정수
 MANWON_TO_KRW = 10_000
 
@@ -533,6 +540,22 @@ class ApartmentFeatures(BaseModel):
         v = v.strip()
         if v not in SEOUL_DISTRICTS:
             raise ValueError(f"서울 25개 자치구 중 하나여야 합니다: {v!r}")
+        return v
+
+    @field_validator("contract_date")
+    @classmethod
+    def _check_contract_date(cls, v: date) -> date:
+        limit = date.today().replace(year=date.today().year + MAX_CONTRACT_DATE_YEARS_AHEAD)
+        if v < MIN_CONTRACT_DATE:
+            raise ValueError(
+                f"{MIN_CONTRACT_DATE.isoformat()} 이후여야 합니다 "
+                f"(실거래가 공개 시작): {v.isoformat()}"
+            )
+        if v > limit:
+            raise ValueError(
+                f"{limit.isoformat()} 이전이어야 합니다. 더 먼 미래는 "
+                f"/forecast/price 로 구간과 함께 받으세요: {v.isoformat()}"
+            )
         return v
 
     def to_record(self) -> dict[str, object]:

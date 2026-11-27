@@ -39,7 +39,6 @@
 from __future__ import annotations
 
 import copy
-from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -279,28 +278,3 @@ def _refresh_date_parts(frame: pd.DataFrame) -> pd.DataFrame:
         built = pd.to_numeric(frame[S.BUILT_YEAR], errors="coerce")
         frame[S.BUILDING_AGE] = (dates.dt.year - built).clip(lower=0)
     return frame
-
-
-def forecast_index(
-    forecaster: MarketIndexForecaster, districts: Iterable[str], months: int = 12
-) -> pd.DataFrame:
-    """자치구별 지수 예측을 표로. 현재 수준 대비 변화율(%)로 돌려준다."""
-    extended = forecaster.extend(months)
-    target = [forecaster.last_month + i for i in range(1, months + 1)]
-    rows = []
-    for district in districts:
-        now = forecaster.table_[district].dropna()
-        if now.empty:
-            continue
-        base = float(now.iloc[-min(forecaster.level_window, len(now)) :].mean())
-        for horizon, month in enumerate(target, start=1):
-            value = float(extended.gu_.get((month, district), extended.seoul_.get(month, base)))
-            rows.append(
-                {
-                    "district": district,
-                    "month": str(month),
-                    "horizon": horizon,
-                    "change_pct": (np.exp(value - base) - 1) * 100,
-                }
-            )
-    return pd.DataFrame(rows)

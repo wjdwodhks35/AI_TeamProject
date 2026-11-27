@@ -24,7 +24,7 @@
 | dong | - | 법정동. 60자 이하 |
 | complex_id | - | 단지 일련번호. `GET /locations/{자치구}` 에서 받은 값 |
 | is_direct_deal | - | 직거래면 true, 중개거래면 false. 모르면 생략 |
-| contract_date | ✅ | 유효한 날짜 |
+| contract_date | ✅ | 2006-01-01 ~ 오늘+1년. 그보다 먼 미래는 `/forecast/price` |
 | area_m2 | ✅ | 10 ~ 400 |
 | floor | ✅ | -5 ~ 100 |
 | built_year | - | 1950 ~ 2030 |

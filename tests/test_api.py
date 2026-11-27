@@ -279,3 +279,19 @@ def test_rule_verdict_levels():
     unknown = rule_verdict(-5.0, None)
     assert unknown.level is RuleLevel.NORMAL
     assert any("직거래 여부" in r for r in unknown.reasons)
+
+
+def test_contract_date_bounds(ready_client):
+    """면적·층·자치구는 막는데 날짜만 뚫려 있었다. 1900년이 200 으로 통과했다."""
+    from datetime import date, timedelta
+
+    def status(value: str) -> int:
+        return ready_client.post(
+            "/predict/price", json={**FEATURES, "contract_date": value}
+        ).status_code
+
+    assert status("1900-01-01") == 422  # 실거래가 공개(2006) 이전
+    assert status("2005-12-31") == 422
+    assert status("2006-01-01") == 200
+    assert status((date.today() + timedelta(days=30)).isoformat()) == 200
+    assert status("2099-01-01") == 422  # 1년 넘는 미래는 /forecast/price 로

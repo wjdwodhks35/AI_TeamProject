@@ -68,6 +68,28 @@ export function mockPredictAnomaly(features, priceKrw) {
   };
 }
 
+export function mockForecast(features, months = 12) {
+  const base = 900_000_000 + (Number(features.area_m2) || 84) * 11_000_000;
+  const points = Array.from({ length: months }, (_, i) => {
+    const month = new Date(Date.UTC(2026, 9 + i, 1));
+    const price = base * (1 + 0.002 * (i + 1));
+    const spread = 1.2 + 0.004 * (i + 1); // 멀수록 넓어지는 모양만 흉내낸다
+    return {
+      month: `${month.getUTCFullYear()}-${String(month.getUTCMonth() + 1).padStart(2, "0")}`,
+      horizon: i + 1,
+      predicted_price_krw: Math.round(price),
+      low_krw: Math.round(price / spread),
+      high_krw: Math.round(price * spread),
+    };
+  });
+  return {
+    base_month: "2026-09",
+    model_name: "mock_model_TEST_ONLY",
+    points,
+    warnings: [MOCK_WARNING],
+  };
+}
+
 export function mockScenarioInterestRate(features, rateBefore, rateAfter) {
   const before = fakePrice({ ...features, base_rate: rateBefore });
   const after = fakePrice({ ...features, base_rate: rateAfter });

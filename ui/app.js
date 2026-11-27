@@ -14,6 +14,7 @@ import { setupDistrictMap } from "./map.js";
 import {
   mockPredictAnomaly,
   mockPredictPrice,
+  mockForecast,
   mockScenarioInterestRate,
 } from "./mock.js";
 
@@ -565,7 +566,7 @@ const RUNNERS = {
       return { value: Number($("forecast_months").value) };
     },
     async run(features, months) {
-      return forecastPrice(features, months);
+      return useMock ? mockForecast(features, months) : forecastPrice(features, months);
     },
     render: renderForecast,
   },
