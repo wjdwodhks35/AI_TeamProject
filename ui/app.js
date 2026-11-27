@@ -4,6 +4,7 @@ import {
   ApiError,
   SEOUL_DISTRICTS,
   getHealth,
+  getLocations,
   predictAnomaly,
   predictPrice,
   scenarioInterestRate,
@@ -17,6 +18,9 @@ import {
 const $ = (id) => document.getElementById(id);
 
 let useMock = false;
+
+/** 현재 자치구의 동·단지 목록. 자치구를 바꿀 때마다 한 번 받아 둔다. */
+let locations = null;
 
 // ---------------------------------------------------------------- 숫자 표시
 
@@ -82,6 +86,13 @@ function collectFeatures() {
   const district = $("district").value;
   if (!district) errors.district = "자치구를 선택하세요.";
   else features.district = district;
+
+  // 단지는 형식상 선택이지만 정확도에 가장 큰 영향을 준다. 서버는 단지가 없으면
+  // 동도 쓰지 않는다 (동만 있는 조합은 학습 때 본 적이 없어 오차가 더 커진다).
+  const complexId = $("complex_id").value;
+  const dong = $("dong").value;
+  if (complexId) features.complex_id = complexId;
+  if (dong) features.dong = dong;
 
   const contractDate = $("contract_date").value;
   if (!contractDate) errors.contract_date = "계약일을 입력하세요.";
@@ -198,10 +209,25 @@ function escapeHtml(value) {
   });
 }
 
+/**
+ * 서버 경고문은 API 사용자를 향해 쓰여 있어서 엔드포인트 이름과 필드명이 들어간다.
+ * 화면에서는 이 페이지에서 할 수 있는 조작으로 바꿔 보여준다.
+ * 원문은 api/main.py 의 NO_COMPLEX_WARNING 과 docs/API_CONTRACT.md 참고.
+ */
+function humanizeWarning(text) {
+  if (text.includes("complex_id") && text.includes("지정하지 않아")) {
+    return "단지를 고르지 않아 자치구 평균으로 추정했습니다. 위 '단지'에서 고르면 평균오차가 4.18억에서 1.41억으로 줄어듭니다.";
+  }
+  if (text.includes("찾지 못했습니다")) {
+    return `${text} 목록에 있는 단지를 고르면 정확해집니다.`;
+  }
+  return text;
+}
+
 function warningList(warnings) {
   if (!Array.isArray(warnings) || warnings.length === 0) return "";
   return `<ul class="warnings">${warnings
-    .map((w) => `<li>${escapeHtml(w)}</li>`)
+    .map((w) => `<li>${escapeHtml(humanizeWarning(String(w)))}</li>`)
     .join("")}</ul>`;
 }
 
@@ -370,6 +396,94 @@ function setupDistricts() {
     SEOUL_DISTRICTS.map((d) => `<option value="${d}">${d}</option>`).join("");
 }
 
+// ---------------------------------------------------------------- 동·단지 선택
+
+function setPlaceholder(select, text, { disabled = true } = {}) {
+  select.innerHTML = `<option value="">${escapeHtml(text)}</option>`;
+  select.disabled = disabled;
+}
+
+/** 단지 목록을 채운다. 동이 선택돼 있으면 그 동만, 아니면 전체. 거래 많은 순. */
+function fillComplexes(dong) {
+  const select = $("complex_id");
+  if (!locations) return;
+
+  const items = locations.complexes
+    .filter((c) => !dong || c.dong === dong)
+    .slice()
+    .sort((a, b) => b.n_deals - a.n_deals);
+
+  if (items.length === 0) {
+    setPlaceholder(select, "해당 동에 단지가 없습니다");
+    return;
+  }
+
+  const label = (c) =>
+    `${dong ? "" : `${c.dong} · `}${c.apartment_name} (거래 ${c.n_deals.toLocaleString("ko-KR")}건)`;
+
+  select.innerHTML =
+    `<option value="">선택 안 함 (자치구 평균으로 추정)</option>` +
+    items
+      .map(
+        (c) =>
+          `<option value="${escapeHtml(c.complex_id)}" data-dong="${escapeHtml(c.dong)}">${escapeHtml(label(c))}</option>`,
+      )
+      .join("");
+  select.disabled = false;
+}
+
+async function loadLocations(district) {
+  const dongSelect = $("dong");
+  const complexSelect = $("complex_id");
+  const hint = $("complex-hint");
+  locations = null;
+
+  if (!district) {
+    setPlaceholder(dongSelect, "자치구를 먼저 선택");
+    setPlaceholder(complexSelect, "자치구를 먼저 선택");
+    return;
+  }
+
+  setPlaceholder(dongSelect, "불러오는 중…");
+  setPlaceholder(complexSelect, "불러오는 중…");
+
+  try {
+    locations = await getLocations(district);
+  } catch (error) {
+    const reason =
+      error instanceof ApiError && error.code === "MODEL_NOT_READY"
+        ? "단지 목록이 서버에 아직 배포되지 않았습니다."
+        : error instanceof ApiError
+          ? error.message
+          : "단지 목록을 불러올 수 없습니다.";
+    setPlaceholder(dongSelect, "목록 없음");
+    setPlaceholder(complexSelect, "목록 없음");
+    hint.textContent = `${reason} 단지 없이도 예측은 되지만 자치구 평균 수준의 추정이 됩니다.`;
+    return;
+  }
+
+  hint.textContent =
+    `${district} 단지 ${locations.complexes.length.toLocaleString("ko-KR")}개. ` +
+    `고르지 않으면 자치구 평균으로만 추정해서 오차가 3배 가까이 커집니다.`;
+
+  dongSelect.innerHTML =
+    `<option value="">전체</option>` +
+    locations.dongs.map((d) => `<option value="${escapeHtml(d)}">${escapeHtml(d)}</option>`).join("");
+  dongSelect.disabled = false;
+  fillComplexes("");
+}
+
+function setupLocations() {
+  $("district").addEventListener("change", (event) => loadLocations(event.target.value));
+  $("dong").addEventListener("change", (event) => fillComplexes(event.target.value));
+
+  // 동을 비워 둔 채로 단지를 고르면 그 단지의 동을 자동으로 맞춰 준다.
+  $("complex_id").addEventListener("change", (event) => {
+    const dong = event.target.selectedOptions[0]?.dataset.dong;
+    if (dong && !$("dong").value) $("dong").value = dong;
+  });
+}
+
 function setupTabs() {
   const tabs = [...document.querySelectorAll('[role="tab"]')];
   tabs.forEach((tab) => {
@@ -411,6 +525,7 @@ function setupRunButtons() {
 }
 
 setupDistricts();
+setupLocations();
 setupTabs();
 setupPriceHint();
 setupMockToggle();

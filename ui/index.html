@@ -38,6 +38,26 @@
           </div>
 
           <div class="field">
+            <label for="dong">법정동</label>
+            <select id="dong" name="dong" disabled>
+              <option value="">자치구를 먼저 선택</option>
+            </select>
+            <p class="field-error" data-error-for="dong"></p>
+          </div>
+
+          <div class="field span-2">
+            <label for="complex_id">단지 <span class="recommend" title="없으면 자치구 평균으로만 추정합니다">권장</span></label>
+            <select id="complex_id" name="complex_id" disabled>
+              <option value="">자치구를 먼저 선택</option>
+            </select>
+            <p class="hint" id="complex-hint">
+              단지를 고르면 그 단지의 실제 거래 수준을 반영합니다. 고르지 않으면 자치구
+              평균으로만 추정해서 오차가 3배 가까이 커집니다.
+            </p>
+            <p class="field-error" data-error-for="complex_id"></p>
+          </div>
+
+          <div class="field">
             <label for="contract_date">계약일 <span class="req">*</span></label>
             <input type="date" id="contract_date" name="contract_date" />
             <p class="field-error" data-error-for="contract_date"></p>

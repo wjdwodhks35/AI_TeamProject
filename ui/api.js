@@ -91,12 +91,28 @@ async function request(path, { method = "GET", body } = {}) {
   return payload;
 }
 
+/**
+ * GET /locations/{자치구} — 그 자치구의 동·단지 목록.
+ *
+ * 단지 식별자(`complex_id`)는 국토부 단지 일련번호라서 사용자가 타이핑할 수 없다.
+ * 이 목록으로 단지명을 보여주고 일련번호를 보낸다. 자치구를 고를 때 한 번만
+ * 호출하면 동·단지 두 선택칸을 모두 채울 수 있다.
+ */
+export function getLocations(district) {
+  return request(`/locations/${encodeURIComponent(district)}`);
+}
+
 /** GET /health — 서버 버전과 모델별 준비 여부 */
 export function getHealth() {
   return request("/health");
 }
 
-/** POST /predict/price — 거래 조건만 보낸다. 실제 거래가격을 넣으면 422 가 된다. */
+/**
+ * POST /predict/price — 거래 조건만 보낸다. 실제 거래가격을 넣으면 422 가 된다.
+ *
+ * `complex_id` 는 형식상 선택이지만 사실상 필수다. 없으면 모델이 자치구 수준으로만
+ * 추정해서 평균오차가 1.41억 -> 4.18억으로 늘어난다 (docs/API_CONTRACT.md).
+ */
 export function predictPrice(features) {
   return request("/predict/price", { method: "POST", body: features });
 }
