@@ -44,9 +44,6 @@ def make_rows(n: int = 10, start: str = "2023-01-01", freq: str = "D") -> pd.Dat
             "floor": [i % 20 + 1 for i in range(n)],
             "built_year": [2000 + i % 20 for i in range(n)],
             "price_krw": [500_000_000 + i * 10_000_000 for i in range(n)],
-            # 회귀의 위치 인코딩이 그룹을 만들 수 있도록 동·단지를 돌려 쓴다.
-            "dong": [["역삼동", "서교동"][i % 2] for i in range(n)],
-            "complex_id": [f"cx{i % 5}" for i in range(n)],
         }
     )
 

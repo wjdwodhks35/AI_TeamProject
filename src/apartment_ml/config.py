@@ -52,7 +52,6 @@ class Settings:
     random_seed: int
     price_model_path: Path
     anomaly_model_path: Path
-    complex_directory_path: Path = PROJECT_ROOT / "models" / "complex_directory.json"
     classification_training_enabled: bool = False
     raw: dict[str, Any] = field(default_factory=dict, repr=False)
 
@@ -93,9 +92,6 @@ def load_settings(config_path: str | os.PathLike[str] | None = None) -> Settings
             price_model_path=_resolve(models.get("price_model_path", "models/price_model.joblib")),
             anomaly_model_path=_resolve(
                 models.get("anomaly_model_path", "models/anomaly_model.joblib")
-            ),
-            complex_directory_path=_resolve(
-                models.get("complex_directory_path", "models/complex_directory.json")
             ),
             classification_training_enabled=bool(
                 raw.get("classification", {}).get("training_enabled", False)

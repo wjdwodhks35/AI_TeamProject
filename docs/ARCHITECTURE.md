@@ -53,9 +53,6 @@ api.main / api.schemas    (PricePredictor / AnomalyDetector 계약에만 의존)
 | `evaluation/split.py` | 시간순 분할, 확장 윈도우 교차검증 | feature/ml |
 | `evaluation/metrics.py` | 회귀·분류 지표 | feature/ml |
 | `models/*` | 모델 래퍼, 레지스트리, 저장/불러오기 | feature/ml |
-| `models/market_index.py` | 직전월 자치구 평당가 지수 — 회귀의 시점 흐름 처리 (회귀 전용) | feature/ml |
-| `models/location_price.py` | 동·단지를 '그 위치의 평균 가격수준' 숫자로 요약 (회귀 전용) | feature/ml |
-| `models/complex_directory.py` | 자치구 → 동 → 단지 목록 — API 의 단지 선택 입력용 참조 표 | feature/ml |
 | `scenarios/interest_rate.py` | 금리 조건 비교 | feature/scenario |
 | `api/*` | FastAPI 엔드포인트, 요청·응답 스키마 | feature/ui |
 | `pipeline.py` | 합성 샘플 데이터로 공통 기반을 점검하는 최소 실행 경로 | 공통 |
@@ -63,8 +60,5 @@ api.main / api.schemas    (PricePredictor / AnomalyDetector 계약에만 의존)
 ## 확장 지점 (기존 코드를 최소한으로 수정하는 방법)
 - 회귀·분류 모델 추가: `REGRESSOR_FACTORIES` / `CLASSIFIER_FACTORIES`에 항목 하나를 추가합니다.
 - 입력 변수 추가: `schemas.REGRESSION_*_FEATURES`에 추가하고, 파생 로직은 `preprocess`에 추가합니다.
-  - ⚠️ `CLASSIFICATION_*_FEATURES`는 `REGRESSION_*_FEATURES`를 그대로 물려받습니다. 회귀에만 쓸 변수는
-    `REGRESSION_LOCATION_FEATURES`처럼 **별도 상수**로 두세요. 분류 입력에는 `price_krw`가 있어서,
-    단지 수준 기준가가 함께 들어가면 이상거래 레이블을 역산할 수 있습니다.
 - 수집기 추가: `collect`의 Protocol을 구현하는 클래스를 추가합니다.
 - API 모델 교체: 모델 파일을 바꾸거나 `create_app(price_model=...)`으로 주입합니다.

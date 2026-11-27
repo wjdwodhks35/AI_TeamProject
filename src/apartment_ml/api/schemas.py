@@ -14,10 +14,6 @@ from apartment_ml.schemas import (
 
 EXAMPLE_FEATURES = {
     "district": "강남구",
-    # 동·단지는 선택 입력이지만 넣어야 정확도가 제대로 나온다 (없으면 MAE 1.41억 -> 4.18억).
-    # 고를 수 있는 값은 GET /locations/강남구 가 내려준다.
-    "dong": "대치동",
-    "complex_id": "11680-2234",
     "contract_date": "2024-05-20",
     "area_m2": 84.9,
     "floor": 12,
@@ -45,23 +41,6 @@ class ErrorResponse(BaseModel):
 
 class PricePredictionRequest(ApartmentFeatures):
     model_config = ConfigDict(extra="forbid", json_schema_extra={"examples": [EXAMPLE_FEATURES]})
-
-
-class ComplexItem(BaseModel):
-    """단지 하나. `complex_id` 를 그대로 예측 요청의 `complex_id` 로 보내면 된다."""
-
-    complex_id: str = Field(..., examples=["11680-2234"])
-    apartment_name: str = Field(..., examples=["은마"])
-    dong: str = Field(..., examples=["대치동"])
-    n_deals: int = Field(..., description="학습 데이터에서의 거래 수 (많을수록 추정이 안정적)")
-
-
-class LocationsResponse(BaseModel):
-    """자치구 하나의 동·단지 목록. 프론트는 자치구를 고를 때 한 번만 호출하면 된다."""
-
-    district: str
-    dongs: list[str] = Field(..., description="법정동 목록 (가나다순)")
-    complexes: list[ComplexItem] = Field(..., description="단지 목록 (동 -> 단지명 순)")
 
 
 class PricePredictionResponse(BaseModel):

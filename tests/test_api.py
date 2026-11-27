@@ -180,17 +180,11 @@ def test_broken_artifact_does_not_stop_server(monkeypatch, tmp_path):
     monkeypatch.setattr(
         main,
         "get_settings",
-        lambda: SimpleNamespace(
-            price_model_path=broken,
-            anomaly_model_path=missing,
-            complex_directory_path=missing,
-        ),
+        lambda: SimpleNamespace(price_model_path=broken, anomaly_model_path=missing),
     )
     with TestClient(create_app()) as client:
         assert client.get("/health").json()["models"] == {"price": False, "anomaly": False}
         assert client.post("/predict/price", json=FEATURES).status_code == 503
-        # 단지 목록이 없어도 서버는 뜬다 (해당 엔드포인트만 503)
-        assert client.get("/locations/강남구").status_code == 503
 
 
 def test_model_not_ready_during_prediction():
@@ -202,60 +196,3 @@ def test_model_not_ready_during_prediction():
 
     with TestClient(create_app(Unready(), load_from_disk=False)) as client:
         assert client.post("/predict/price", json=FEATURES).status_code == 503
-
-
-# -- 단지 선택 입력 --------------------------------------------------------------
-# 단지를 못 받으면 위치 인코딩이 '처음 보는 단지'로 떨어져 자치구 수준 추정이 된다.
-# 측정: MAE 1.41억 -> 4.18억, R2 0.935 -> 0.499 (기준선 0.603 보다도 낮다).
-# 그래서 (1) 고를 목록을 내려주고 (2) 안 주면 경고한다.
-
-
-def _directory():
-    import pandas as pd
-
-    from apartment_ml.models.complex_directory import ComplexDirectory
-
-    return ComplexDirectory.build(
-        pd.DataFrame(
-            {
-                "district": ["강남구", "강남구", "마포구"],
-                "dong": ["대치동", "역삼동", "서교동"],
-                "complex_id": ["11680-218", "11680-2", "11440-1"],
-                "apartment_name": ["은마", "래미안", "메세나폴리스"],
-            }
-        )
-    )
-
-
-@pytest.fixture
-def located_client():
-    app = create_app(FakePriceModel(), load_from_disk=False, complex_directory=_directory())
-    with TestClient(app) as c:
-        yield c
-
-
-def test_locations_lists_dongs_and_complexes(located_client):
-    body = located_client.get("/locations/강남구").json()
-    assert body["dongs"] == ["대치동", "역삼동"]
-    assert [c["apartment_name"] for c in body["complexes"]] == ["은마", "래미안"]
-    assert located_client.get("/locations/없는구").status_code == 404
-    assert (
-        located_client.get("/locations/강남구").json()["complexes"][0]["complex_id"] == "11680-218"
-    )
-
-
-def test_locations_503_without_directory(ready_client):
-    r = ready_client.get("/locations/강남구")
-    assert r.status_code == 503
-    assert r.json()["detail"]["code"] == "MODEL_NOT_READY"
-
-
-def test_price_warns_about_complex_input(located_client):
-    def warnings(extra: dict) -> list[str]:
-        r = located_client.post("/predict/price", json={**FEATURES, **extra})
-        assert r.status_code == 200
-        return r.json()["warnings"]
-
-    assert any("complex_id" in w for w in warnings({}))
-    assert any("찾지 못했습니다" in w for w in warnings({"complex_id": "99999-1"}))
-    assert warnings({"dong": "대치동", "complex_id": "11680-218"}) == []

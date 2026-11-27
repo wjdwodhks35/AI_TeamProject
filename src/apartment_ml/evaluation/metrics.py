@@ -33,12 +33,7 @@ def _validate_pair(y_true, y_pred) -> tuple[np.ndarray, np.ndarray]:
 
 
 def regression_metrics(y_true, y_pred) -> dict[str, float]:
-    """MAE, RMSE, R2, MAPE.
-
-    - ``mae`` / ``rmse`` 단위는 입력과 같다 (가격이면 원).
-    - ``r2`` 는 1 - SSE/SST. 정답이 모두 같은 값이면 SST 가 0 이라 정의되지 않으므로 NaN.
-    - ``mape`` 는 정답이 0 인 행을 제외한 평균 절대 백분율 오차(%). 남는 행이 없으면 NaN.
-    """
+    """MAE, RMSE (단위: 입력과 동일, 가격이면 원)."""
     t, p = _validate_pair(y_true, y_pred)
     try:
         t, p = t.astype("float64"), p.astype("float64")
@@ -47,15 +42,9 @@ def regression_metrics(y_true, y_pred) -> dict[str, float]:
     if not (np.isfinite(t).all() and np.isfinite(p).all()):
         raise MetricInputError("회귀 평가 값에 NaN/inf 가 포함되어 있습니다.")
     err = p - t
-    sst = float(np.sum((t - t.mean()) ** 2))
-    nonzero = t != 0
     return {
         "mae": float(np.mean(np.abs(err))),
         "rmse": float(np.sqrt(np.mean(err**2))),
-        "r2": 1.0 - float(np.sum(err**2)) / sst if sst > 0 else float("nan"),
-        "mape": float(np.mean(np.abs(err[nonzero] / t[nonzero])) * 100)
-        if nonzero.any()
-        else float("nan"),
         "n": int(t.size),
     }
 

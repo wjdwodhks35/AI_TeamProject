@@ -30,19 +30,16 @@ from apartment_ml import schemas as S
 from apartment_ml.api.schemas import (
     AnomalyPredictionRequest,
     AnomalyPredictionResponse,
-    ComplexItem,
     ErrorResponse,
     HealthResponse,
     InterestRateScenarioRequest,
     InterestRateScenarioResponse,
-    LocationsResponse,
     PricePredictionRequest,
     PricePredictionResponse,
 )
 from apartment_ml.config import get_cors_origins, get_settings
 from apartment_ml.data.preprocess import add_price_features
 from apartment_ml.models.base import AnomalyDetector, ModelNotReadyError, PricePredictor
-from apartment_ml.models.complex_directory import ComplexDirectory, ComplexDirectoryError
 from apartment_ml.scenarios.interest_rate import (
     ScenarioNotSupportedError,
     build_feature_frame,
@@ -59,42 +56,11 @@ NOT_READY_RESPONSES = {
 }
 
 
-NO_COMPLEX_WARNING = (
-    "단지(complex_id)를 지정하지 않아 자치구 수준으로 추정했습니다. "
-    "측정 기준 평균오차가 1.41억 -> 4.18억으로 늘어납니다. "
-    "GET /locations/{자치구} 에서 단지를 골라 complex_id 를 함께 보내면 정확해집니다."
-)
-
-
-def _location_warnings(
-    features: S.ApartmentFeatures, directory: ComplexDirectory | None
-) -> list[str]:
-    """단지 입력 상태에 대한 경고. 조용히 거친 추정을 주지 않기 위한 것이다."""
-    complex_id = (features.complex_id or "").strip()
-    if not complex_id:
-        return [NO_COMPLEX_WARNING]
-    if directory is not None and not directory.has(features.district, complex_id):
-        return [
-            f"단지 일련번호 {complex_id!r} 를 {features.district} 목록에서 찾지 못했습니다. "
-            f"모델이 본 적 없는 단지이므로 자치구 수준 추정에 가깝습니다."
-        ]
-    return []
-
-
 def _not_ready(message: str) -> HTTPException:
     return HTTPException(
         status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
         detail={"code": "MODEL_NOT_READY", "message": message},
     )
-
-
-def _load_complex_directory() -> ComplexDirectory | None:
-    """단지 목록을 읽는다. 없으면 /locations 만 503 이 되고 예측은 그대로 동작한다."""
-    try:
-        return ComplexDirectory.load(get_settings().complex_directory_path)
-    except ComplexDirectoryError as exc:
-        logger.warning("단지 목록 로드 실패: %s", exc)
-        return None
 
 
 def _load_models_from_disk() -> tuple[PricePredictor | None, AnomalyDetector | None]:
@@ -121,7 +87,6 @@ def create_app(
     price_model: PricePredictor | None = None,
     anomaly_model: AnomalyDetector | None = None,
     load_from_disk: bool = True,
-    complex_directory: ComplexDirectory | None = None,
 ) -> FastAPI:
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
@@ -131,8 +96,6 @@ def create_app(
                 app.state.price_model = loaded_price
             if anomaly_model is None:
                 app.state.anomaly_model = loaded_anomaly
-            if complex_directory is None:
-                app.state.complex_directory = _load_complex_directory()
         yield
 
     app = FastAPI(
@@ -143,7 +106,6 @@ def create_app(
     )
     app.state.price_model = price_model
     app.state.anomaly_model = anomaly_model
-    app.state.complex_directory = complex_directory
     app.add_middleware(
         CORSMiddleware,
         allow_origins=get_cors_origins(),
@@ -252,41 +214,6 @@ def create_app(
             },
         )
 
-    @app.get(
-        "/locations/{district}",
-        response_model=LocationsResponse,
-        responses={
-            404: {"model": ErrorResponse, "description": "서울 25개 자치구가 아님"},
-            status.HTTP_503_SERVICE_UNAVAILABLE: {
-                "model": ErrorResponse,
-                "description": "단지 목록 미준비",
-            },
-        },
-        tags=["reference"],
-    )
-    def locations(district: str, request: Request) -> LocationsResponse:
-        """그 자치구의 동·단지 목록. 자치구를 고를 때 한 번 호출해 두 드롭다운을 채운다."""
-        directory: ComplexDirectory | None = request.app.state.complex_directory
-        if directory is None:
-            raise _not_ready(
-                "단지 목록이 준비되지 않았습니다 (scripts/train_price.py 를 실행하세요)."
-            )
-        name = district.strip()
-        if name not in S.SEOUL_DISTRICTS:
-            raise HTTPException(
-                status_code=404,
-                detail={
-                    "code": "DISTRICT_NOT_FOUND",
-                    "message": f"서울 25개 자치구 중 하나여야 합니다: {name!r}",
-                },
-            )
-        entries = directory.complexes(name)
-        return LocationsResponse(
-            district=name,
-            dongs=directory.dongs(name),
-            complexes=[ComplexItem(**e.to_dict()) for e in entries],
-        )
-
     @app.post(
         "/predict/price",
         response_model=PricePredictionResponse,
@@ -302,8 +229,7 @@ def create_app(
         pred = float(predictions[0])
         if not math.isfinite(pred):
             raise RuntimeError("Price prediction must be finite")
-        warnings = _location_warnings(body, request.app.state.complex_directory)
-        warnings += out_of_range_warnings(model, frame)
+        warnings = out_of_range_warnings(model, frame)
         if pred <= 0:
             warnings.append(
                 "모델 예측값이 0 이하입니다. 입력 조건이 학습 범위를 벗어났을 수 있습니다."
@@ -339,8 +265,6 @@ def create_app(
             raise RuntimeError("Invalid anomaly probability or threshold")
 
         warnings: list[str] = ["이 결과는 이상거래 의심 판정이며 위법 여부를 확정하지 않습니다."]
-        # 기준가격은 가격 회귀 모델이 내므로 단지 입력이 없으면 같이 거칠어진다.
-        warnings += _location_warnings(features, request.app.state.complex_directory)
         reference = gap = None
         price_model = request.app.state.price_model
         if price_model is not None and price_model.is_fitted:
