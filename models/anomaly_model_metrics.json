@@ -1,0 +1,219 @@
+{
+  "data_path": "/home/claude/wjdwodhks35/ai_teamproject/data/processed/training_dataset.csv",
+  "label_source": "label_anomalies(direction=below): 같은 자치구·평형대 기준가 대비 1단계 20%, 2단계 30% 이상 싼 거래. 2026-11-27 확정.",
+  "label_direction": "below",
+  "baseline_direct_deal": {
+    "precision": 0.36324786324786323,
+    "recall": 0.37833827893175076,
+    "f1": 0.3706395348837209,
+    "confusion_matrix": [
+      [
+        27216,
+        447
+      ],
+      [
+        419,
+        255
+      ]
+    ],
+    "labels": [
+      0,
+      1
+    ],
+    "n": 28337
+  },
+  "splits": {
+    "train": {
+      "start": "2021-01-01",
+      "end": "2025-07-14",
+      "rows": 180279,
+      "unlabelled": 74605,
+      "normal": 104178,
+      "suspicious": 1496
+    },
+    "valid": {
+      "start": "2025-07-15",
+      "end": "2026-02-18",
+      "rows": 38666,
+      "unlabelled": 9182,
+      "normal": 28955,
+      "suspicious": 529
+    },
+    "test": {
+      "start": "2026-02-19",
+      "end": "2026-08-31",
+      "rows": 38710,
+      "unlabelled": 10373,
+      "normal": 27663,
+      "suspicious": 674
+    }
+  },
+  "threshold": 0.5,
+  "selected_model": "hist_gradient_boosting",
+  "model_path": "/home/claude/wjdwodhks35/ai_teamproject/models/anomaly_model.joblib",
+  "report_path": "/home/claude/wjdwodhks35/ai_teamproject/models/anomaly_model_metrics.json",
+  "validation_metrics": {
+    "decision_tree": {
+      "precision": 0.11933797909407666,
+      "recall": 0.2589792060491493,
+      "f1": 0.16338700059630293,
+      "confusion_matrix": [
+        [
+          27944,
+          1011
+        ],
+        [
+          392,
+          137
+        ]
+      ],
+      "labels": [
+        0,
+        1
+      ],
+      "n": 29484
+    },
+    "random_forest": {
+      "precision": 0.5757575757575758,
+      "recall": 0.07183364839319471,
+      "f1": 0.12773109243697478,
+      "confusion_matrix": [
+        [
+          28927,
+          28
+        ],
+        [
+          491,
+          38
+        ]
+      ],
+      "labels": [
+        0,
+        1
+      ],
+      "n": 29484
+    },
+    "hist_gradient_boosting": {
+      "precision": 0.2861635220125786,
+      "recall": 0.1720226843100189,
+      "f1": 0.21487603305785125,
+      "confusion_matrix": [
+        [
+          28728,
+          227
+        ],
+        [
+          438,
+          91
+        ]
+      ],
+      "labels": [
+        0,
+        1
+      ],
+      "n": 29484
+    },
+    "voting": {
+      "precision": 0.32489451476793246,
+      "recall": 0.14555765595463138,
+      "f1": 0.2010443864229765,
+      "confusion_matrix": [
+        [
+          28795,
+          160
+        ],
+        [
+          452,
+          77
+        ]
+      ],
+      "labels": [
+        0,
+        1
+      ],
+      "n": 29484
+    }
+  },
+  "test_metrics": {
+    "decision_tree": {
+      "precision": 0.10722433460076046,
+      "recall": 0.20919881305637983,
+      "f1": 0.14177978883861236,
+      "confusion_matrix": [
+        [
+          26489,
+          1174
+        ],
+        [
+          533,
+          141
+        ]
+      ],
+      "labels": [
+        0,
+        1
+      ],
+      "n": 28337
+    },
+    "random_forest": {
+      "precision": 0.5873015873015873,
+      "recall": 0.05489614243323442,
+      "f1": 0.10040705563093623,
+      "confusion_matrix": [
+        [
+          27637,
+          26
+        ],
+        [
+          637,
+          37
+        ]
+      ],
+      "labels": [
+        0,
+        1
+      ],
+      "n": 28337
+    },
+    "hist_gradient_boosting": {
+      "precision": 0.2654639175257732,
+      "recall": 0.15281899109792285,
+      "f1": 0.19397363465160075,
+      "confusion_matrix": [
+        [
+          27378,
+          285
+        ],
+        [
+          571,
+          103
+        ]
+      ],
+      "labels": [
+        0,
+        1
+      ],
+      "n": 28337
+    },
+    "voting": {
+      "precision": 0.35018050541516244,
+      "recall": 0.14391691394658754,
+      "f1": 0.20399579390115669,
+      "confusion_matrix": [
+        [
+          27483,
+          180
+        ],
+        [
+          577,
+          97
+        ]
+      ],
+      "labels": [
+        0,
+        1
+      ],
+      "n": 28337
+    }
+  }
+}

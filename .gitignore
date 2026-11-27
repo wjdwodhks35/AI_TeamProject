@@ -36,8 +36,15 @@ data/processed/*
 !data/processed/.gitkeep
 
 # Trained model artifacts
+# 학습된 모델은 올립니다. 압축해서 가격 회귀가 11MB, 나머지는 1MB 미만입니다.
+# 팀원이 받자마자 deploy.bat 을 돌릴 수 있고, 발표 때 재현도 됩니다.
+# 주의: 다시 학습해서 올릴 때마다 히스토리에 그만큼 쌓입니다. 자주 올리지 마세요.
 models/*
 !models/.gitkeep
+!models/price_regression.joblib
+!models/complex_directory.json
+!models/anomaly_model.joblib
+!models/anomaly_model_metrics.json
 
 # Notebooks checkpoints
 .ipynb_checkpoints/
