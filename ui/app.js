@@ -296,6 +296,77 @@ function renderAnomaly(container, data) {
     </div>`;
 }
 
+/**
+ * 금리 반응 곡선. 두 값만 비교하면 매끄러운 반응으로 오해하는데, 실제로는 분기 몇 개가
+ * 만든 계단이다. 관측 범위 전체를 그려서 그 사실을 그대로 보여준다.
+ */
+function rateCurveChart(curve, before, after) {
+  if (!Array.isArray(curve) || curve.length < 2) return "";
+  const { w, h, left, right, top, bottom } = CHART;
+  const innerW = w - left - right;
+  const innerH = h - top - bottom;
+
+  const rates = curve.map((c) => c.base_rate);
+  const prices = curve.map((c) => c.predicted_price_krw);
+  const rLo = Math.min(...rates);
+  const rHi = Math.max(...rates);
+  const pad = (Math.max(...prices) - Math.min(...prices)) * 0.12 || 1;
+  const pLo = Math.min(...prices) - pad;
+  const pHi = Math.max(...prices) + pad;
+
+  const x = (r) => left + ((r - rLo) / (rHi - rLo || 1)) * innerW;
+  const y = (v) => top + innerH - ((v - pLo) / (pHi - pLo)) * innerH;
+
+  const grid = ticks(pLo, pHi)
+    .map(
+      (v) =>
+        `<line x1="${left}" x2="${w - right}" y1="${y(v).toFixed(1)}" y2="${y(v).toFixed(1)}" stroke="${CHART.grid}"/>` +
+        `<text x="${left - 8}" y="${(y(v) + 4).toFixed(1)}" text-anchor="end" class="axis">${escapeHtml(formatKrw(v))}</text>`,
+    )
+    .join("");
+
+  // 계단이라는 것이 보이도록 직선 보간 그대로 둔다 (곡선으로 부드럽게 만들지 않는다).
+  const line = curve
+    .map((c, i) => `${i ? "L" : "M"}${x(c.base_rate).toFixed(1)},${y(c.predicted_price_krw).toFixed(1)}`)
+    .join("");
+
+  const marks = [before, after]
+    .filter((r) => r >= rLo && r <= rHi)
+    .map((r) => {
+      const near = curve.reduce((a, b) =>
+        Math.abs(b.base_rate - r) < Math.abs(a.base_rate - r) ? b : a,
+      );
+      return (
+        `<circle cx="${x(near.base_rate).toFixed(1)}" cy="${y(near.predicted_price_krw).toFixed(1)}" r="4.5" fill="${CHART.line}"/>` +
+        `<text x="${x(near.base_rate).toFixed(1)}" y="${(y(near.predicted_price_krw) - 10).toFixed(1)}" text-anchor="middle" class="point-label">${near.base_rate.toFixed(2)}%</text>`
+      );
+    })
+    .join("");
+
+  const axis = [rLo, (rLo + rHi) / 2, rHi]
+    .map(
+      (r, i) =>
+        `<text x="${x(r).toFixed(1)}" y="${h - 8}" text-anchor="${i === 0 ? "start" : i === 2 ? "end" : "middle"}" class="axis">${r.toFixed(2)}%</text>`,
+    )
+    .join("");
+
+  const hover = curve
+    .map(
+      (c) =>
+        `<g class="hit"><rect x="${(x(c.base_rate) - innerW / curve.length / 2).toFixed(1)}" y="${top}" ` +
+        `width="${(innerW / curve.length).toFixed(1)}" height="${innerH}" fill="transparent"/>` +
+        `<line x1="${x(c.base_rate).toFixed(1)}" x2="${x(c.base_rate).toFixed(1)}" y1="${top}" y2="${top + innerH}" stroke="${CHART.line}" stroke-dasharray="2 2"/>` +
+        `<title>기준금리 ${c.base_rate.toFixed(2)}% · ${escapeHtml(formatKrw(c.predicted_price_krw))}</title></g>`,
+    )
+    .join("");
+
+  return (
+    `<svg class="chart" viewBox="0 0 ${w} ${h}" role="img" ` +
+    `aria-label="기준금리별 예측가격">${grid}` +
+    `<path d="${line}" fill="none" stroke="${CHART.line}" stroke-width="2"/>${marks}${axis}${hover}</svg>`
+  );
+}
+
 function renderScenario(container, data) {
   const diff = Number(data.price_diff_krw);
   const direction = diff > 0 ? "상승" : diff < 0 ? "하락" : "변화 없음";
@@ -303,6 +374,13 @@ function renderScenario(container, data) {
   container.innerHTML = `<div class="box">
       <h3>금리 변경 시 예측가격 비교</h3>
       <p class="headline">${escapeHtml(formatKrw(Math.abs(diff)))} ${escapeHtml(direction)}</p>
+      ${
+        data.extrapolated && Array.isArray(data.observed_range)
+          ? `<p class="hint"><strong>학습 데이터의 기준금리는 ${data.observed_range[0]}~${data.observed_range[1]}% 뿐입니다.</strong>
+             그 밖의 값은 모델이 구분하지 못해 경계와 같은 답이 나옵니다.</p>`
+          : ""
+      }
+      ${rateCurveChart(data.curve ?? [], data.base_rate_before, data.base_rate_after)}
       ${rows([
         [`변경 전 (${formatPct(data.base_rate_before)})`, formatKrw(data.predicted_price_before_krw)],
         [`변경 후 (${formatPct(data.base_rate_after)})`, formatKrw(data.predicted_price_after_krw)],

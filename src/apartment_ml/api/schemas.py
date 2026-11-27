@@ -139,6 +139,11 @@ class InterestRateScenarioRequest(BaseModel):
     base_rate_after: float = Field(..., ge=MIN_BASE_RATE, le=MAX_BASE_RATE)
 
 
+class RateCurvePoint(BaseModel):
+    base_rate: float
+    predicted_price_krw: float
+
+
 class InterestRateScenarioResponse(BaseModel):
     base_rate_before: float
     base_rate_after: float
@@ -147,5 +152,15 @@ class InterestRateScenarioResponse(BaseModel):
     price_diff_krw: float
     price_change_pct: float | None
     model_name: str
+    # 두 값만 비교하면 매끄러운 반응으로 오해한다. 실제로는 분기 몇 개가 만든 계단이다.
+    curve: list[RateCurvePoint] = Field(
+        default_factory=list, description="관측된 금리 범위 전체의 예측가격. 화면에 그려 주세요"
+    )
+    observed_range: list[float] | None = Field(
+        None, description="학습 데이터의 기준금리 [최소, 최대]. 이 밖은 모델이 구분하지 못합니다"
+    )
+    extrapolated: bool = Field(
+        False, description="요청한 금리가 관측 범위 밖인지. true 면 경계와 같은 답입니다"
+    )
     warnings: list[str] = Field(default_factory=list)
     disclaimer: str

@@ -50,3 +50,25 @@ def test_same_rates():
     result = compare_interest_rate_scenario(FakePriceModel(), FEATURES, 3, 3)
     assert result.price_diff_krw == 0
     assert result.price_change_pct == 0
+
+
+# 두 값만 비교하면 매끄러운 반응으로 오해한다. 실제 금리 반응은 분기 몇 개가 만든
+# 계단이고, 학습 범위 밖은 경계와 똑같은 답이 나온다. 그래서 곡선을 같이 준다.
+
+
+def test_curve_covers_observed_range():
+    result = compare_interest_rate_scenario(FakePriceModel(), FEATURES, 1.0, 3.0)
+    rates = [p["base_rate"] for p in result.curve]
+    assert result.observed_range == [0.5, 3.5]
+    assert result.extrapolated is False
+    assert rates == sorted(rates)
+    assert rates[0] == 0.5 and rates[-1] == 3.5
+    assert len(rates) >= 13  # 0.25%p 간격
+
+
+def test_curve_flags_extrapolation_and_stays_inside():
+    result = compare_interest_rate_scenario(FakePriceModel(), FEATURES, 2.5, 5.0)
+    assert result.extrapolated is True
+    assert any("구분하지 못해서" in w for w in result.warnings)
+    # 범위 밖 값은 곡선에 넣지 않는다 — 모델이 경계와 구분하지 못하므로
+    assert max(p["base_rate"] for p in result.curve) == 3.5
