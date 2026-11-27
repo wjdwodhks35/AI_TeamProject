@@ -2,33 +2,43 @@
 
 빌드 도구 없는 정적 화면입니다. 백엔드 API(`http://127.0.0.1:8000`)를 호출합니다.
 
-## 실행 1: 리눅스 배포 (권장)
+## 실행 1: 윈도우 (회의·시연용)
 
-저장소 루트에서:
+저장소 루트의 `deploy.bat` 을 더블클릭하거나 cmd 에서 실행합니다.
+
+```
+deploy.bat
+```
+
+처음 한 번은 가상환경을 만들고 의존성을 설치하느라 몇 분 걸립니다. 그 다음부터는 바로
+뜹니다. 접속은 <http://localhost:8010>, API 문서는 `/docs` 입니다.
+
+**UI(html/css/js)를 고치면 브라우저 새로고침만 하면 바로 반영됩니다.** 서버를 다시 띄울
+필요가 없습니다. 파이썬 코드까지 고치면서 볼 때는 `set RELOAD=1` 을 먼저 실행합니다.
+두 번째 실행부터 설치를 건너뛰려면 `set SKIP_INSTALL=1` 입니다.
+
+localhost 에만 바인딩하므로 같은 네트워크의 다른 PC 에서는 접속되지 않습니다.
+화면 공유로 보여주는 용도입니다.
+
+## 실행 2: 리눅스 서버 배포
 
 ```bash
 ./deploy.sh
 ```
 
-API 와 UI 를 **8010 한 포트**로 함께 제공합니다. 같은 출처라서 CORS 설정이 필요 없습니다.
-접속은 <http://localhost:8010>, API 문서는 `/docs` 입니다.
+같은 구성을 외부 접속까지 열어서 띄웁니다 (`HOST=127.0.0.1` 로 막을 수 있습니다).
 
-## 실행 2: 윈도우 개발 (터미널 2개)
+## 실행 3: 정적 서버만 따로 (프론트만 고칠 때)
 
 ```powershell
-# 1) 백엔드
-$env:APARTMENT_ML_CORS_ORIGINS = "http://localhost:5173"
-.\.venv\Scripts\python.exe -m uvicorn apartment_ml.api.main:app --reload
-
-# 2) 프론트엔드
 python -m http.server 5173 --directory ui
 ```
 
-브라우저에서 <http://localhost:5173> 을 엽니다. `api.js` 가 출처 포트를 보고 백엔드
-주소(8000)를 자동으로 가리킵니다.
+백엔드는 `APARTMENT_ML_CORS_ORIGINS="http://localhost:5173"` 을 주고 따로 띄웁니다.
+`api.js` 가 출처 포트를 보고 백엔드 주소(8000)를 자동으로 가리킵니다.
 
-`index.html` 파일을 더블클릭해서 열면 안 됩니다. `file://` 출처는 백엔드 CORS 허용
-목록에 없어서 모든 요청이 막힙니다.
+`index.html` 을 더블클릭해서 열면 안 됩니다. `file://` 출처는 CORS 허용 목록에 없어서
+모든 요청이 막힙니다.
 
 ## 구성
 
@@ -38,7 +48,7 @@ python -m http.server 5173 --directory ui
 | `api.js` | API 호출과 오류 변환 (`ApiError`) |
 | `app.js` | 입력 수집, 결과·오류 렌더링 |
 | `mock.js` | 개발용 가짜 응답 (모델 없을 때 화면 확인용) |
-| `style.css` | 최소 스타일 |
+| `style.css` | 스타일. 색을 쓰지 않고 선·여백·굵기로만 구분합니다 |
 
 ## 단지 선택
 
@@ -52,6 +62,13 @@ python -m http.server 5173 --directory ui
 
 단지 목록은 모델과 같은 실행에서 만들어진 `models/complex_directory.json` 을 서버가 읽어
 내려줍니다. 이 파일이 없으면 선택칸이 '목록 없음'이 되고, 예측은 자치구 수준으로 동작합니다.
+
+## 화면에 적힌 평균오차
+
+결과에 "평균 ±1.12억 차이로 맞힙니다" 가 함께 나옵니다. 큰 숫자 하나만 띄우면 그 값이
+정확한 것처럼 보이기 때문입니다. 이 값은 `app.js` 의 `MODEL_MAE_KRW` 상수이고 출처는
+`docs/MODEL_PLAN.md` §1 의 배포본 행입니다. **모델을 다시 학습하면 이 상수도 고쳐야
+합니다.** (서버가 내려주게 하려면 `/health` 응답에 넣는 방법이 있습니다.)
 
 ## 개발용 가짜 응답
 

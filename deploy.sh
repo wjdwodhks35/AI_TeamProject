@@ -68,11 +68,13 @@ export APARTMENT_ML_UI_DIR="$ROOT/ui"
 export APARTMENT_ML_CONFIG="${APARTMENT_ML_CONFIG:-$ROOT/configs/settings.yaml}"
 
 echo "[3/3] 모델 파일 확인"
-for model in models/price_model.joblib models/anomaly_model.joblib; do
+# 경로는 configs/settings.yaml 의 models.* 와 같아야 한다.
+for model in models/price_regression.joblib models/complex_directory.json \
+  models/anomaly_model.joblib; do
   if [[ -f "$ROOT/$model" ]]; then
     echo "      $model — 있음"
   else
-    echo "      $model — 없음 (해당 예측은 503 MODEL_NOT_READY)"
+    echo "      $model — 없음 (해당 기능은 503 MODEL_NOT_READY)"
   fi
 done
 

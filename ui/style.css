@@ -1,308 +1,450 @@
-/* 최소 스타일. 레이아웃과 가독성만 잡고 꾸미지 않는다. */
+/* 실거래가 명세서를 화면으로 옮긴 모양.
+ *
+ * 규칙 세 가지.
+ * 1. 색을 쓰지 않는다. 강조는 굵기·크기·여백·반전으로만 한다.
+ * 2. 테두리 상자를 쓰지 않는다. 항목은 선과 여백으로 나눈다.
+ * 3. 숫자는 고정폭으로 둔다. 금액은 자릿수가 맞아야 읽힌다.
+ *
+ * 과감한 곳은 결과 하나뿐이다. 입력부는 끝까지 조용하게 둔다.
+ */
 
 :root {
-  --line: #d8d8d8;
-  --text: #1a1a1a;
-  --muted: #6b6b6b;
-  --bg-soft: #f6f6f6;
-  --bad: #a01b1b;
-  --warn: #8a6100;
-  --ok: #1d6b3a;
+  --ink: #000;
+  --paper: #fff;
+  --ash: #6e6e6e; /* 보조 텍스트. 흰 바탕에서 4.8:1 */
+  --rule: #8f8f8f; /* 입력칸 밑줄 — 조작 가능한 경계라 3:1 이상 */
+  --hair: #e0e0e0; /* 구분선 */
+
+  /* Pretendard 가 깔려 있으면 쓰고, 없으면 OS 기본 한글 폰트로 떨어진다.
+   * 오프라인 시연이라 CDN 은 쓰지 않는다. */
+  --font-text: Pretendard, "Apple SD Gothic Neo", "Malgun Gothic", "Noto Sans KR",
+    system-ui, sans-serif;
+  /* 숫자 전용. 라벨에는 쓰지 않는다 — 숫자를 세로로 맞추려는 목적이다. */
+  --font-num: ui-monospace, "SF Mono", "Cascadia Mono", Consolas, "D2Coding", monospace;
+
+  --gap: 1.75rem;
 }
 
 * {
   box-sizing: border-box;
 }
 
+html {
+  -webkit-text-size-adjust: 100%;
+}
+
 body {
-  margin: 0;
-  padding: 0 1.5rem 4rem;
-  max-width: 940px;
-  margin-inline: auto;
-  font-family: system-ui, "Segoe UI", "Malgun Gothic", sans-serif;
-  color: var(--text);
-  line-height: 1.5;
+  margin: 0 auto;
+  padding: 0 1.5rem 6rem;
+  max-width: 54rem;
+  background: var(--paper);
+  color: var(--ink);
+  font-family: var(--font-text);
+  font-size: 0.9375rem;
+  line-height: 1.55;
+  word-break: keep-all; /* 한글이 단어 중간에서 끊기지 않게 */
 }
 
-h1 {
-  font-size: 1.25rem;
-  margin: 0;
+/* 숫자는 어디에 있든 고정폭·자릿수 고정 */
+.num,
+input[type="number"],
+input[type="date"],
+code {
+  font-family: var(--font-num);
+  font-variant-numeric: tabular-nums;
 }
 
-h2 {
-  font-size: 1.05rem;
-  margin: 0 0 0.25rem;
-}
-
-h3 {
-  font-size: 0.95rem;
-  margin: 1.25rem 0 0.25rem;
-}
-
-/* ---------------------------------------------------------------- 상단 */
+/* ---------------------------------------------------------------- 머리말 */
 
 .topbar {
   display: flex;
   flex-wrap: wrap;
-  gap: 0.75rem;
-  align-items: center;
+  align-items: flex-end;
   justify-content: space-between;
-  padding: 1.25rem 0;
-  border-bottom: 1px solid var(--line);
+  gap: 1rem;
+  padding: 2.5rem 0 1rem;
+  border-bottom: 1px solid var(--ink);
 }
 
-.topbar-right {
+h1 {
+  margin: 0;
+  font-size: 1.125rem;
+  font-weight: 700;
+  letter-spacing: -0.015em;
+}
+
+.subtitle {
+  margin: 0.15rem 0 0;
+  font-size: 0.8125rem;
+  color: var(--ash);
+}
+
+/* 상태는 '문자열 이어붙이기' 가 아니라 항목과 값으로 둔다 */
+.status {
   display: flex;
   flex-wrap: wrap;
-  gap: 0.75rem;
-  align-items: center;
-  font-size: 0.85rem;
+  gap: 0 1.25rem;
+  margin: 0;
+  font-size: 0.75rem;
 }
 
-.health.ok {
-  color: var(--ok);
+.status div {
+  display: flex;
+  flex-direction: column;
 }
-.health.warn {
-  color: var(--warn);
+
+.status dt {
+  color: var(--ash);
 }
-.health.bad {
-  color: var(--bad);
+
+.status dd {
+  margin: 0;
+  font-weight: 600;
+}
+
+.status dd[data-state="off"] {
+  font-weight: 400;
+  color: var(--ash);
+}
+
+.topbar-tools {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  font-size: 0.75rem;
 }
 
 .mock-toggle {
   display: inline-flex;
-  gap: 0.3rem;
+  gap: 0.35rem;
   align-items: center;
-  white-space: nowrap; /* 좁은 폭에서 '개발용 / 가짜 / 응답' 으로 쪼개지지 않게 */
-  color: var(--muted);
+  white-space: nowrap;
+  color: var(--ash);
 }
 
+/* 경고·오류는 색 대신 반전으로 */
 .banner {
   margin: 1rem 0 0;
-  padding: 0.75rem;
-  border: 1px solid var(--bad);
-  color: var(--bad);
-  font-size: 0.85rem;
+  padding: 0.6rem 0.75rem;
+  background: var(--ink);
+  color: var(--paper);
+  font-size: 0.8125rem;
 }
 
 /* ---------------------------------------------------------------- 입력 */
 
 form {
-  padding: 1.5rem 0;
-  border-bottom: 1px solid var(--line);
+  padding: var(--gap) 0 calc(var(--gap) - 0.5rem);
 }
 
+h2,
+h3 {
+  margin: 0;
+  font-size: 0.875rem;
+  font-weight: 700;
+}
+
+h3 {
+  margin-top: var(--gap);
+}
+
+.section-note {
+  margin: 0.15rem 0 1.25rem;
+  font-size: 0.8125rem;
+  color: var(--ash);
+}
+
+/* 균등 분할 대신 내용에 맞춰 폭을 준다 */
 .field-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
-  gap: 1rem;
-  margin-top: 0.75rem;
+  grid-template-columns: repeat(12, 1fr);
+  gap: 1.25rem 1rem;
 }
 
-.field.wide {
-  grid-column: 1 / -1;
-  max-width: 320px;
+.field {
+  grid-column: span 3;
+  min-width: 0;
 }
 
-/* 단지명은 길어서 한 칸에 안 들어간다. */
-.field.span-2 {
-  grid-column: span 2;
+.field.span-6 {
+  grid-column: span 6;
 }
 
-@media (max-width: 560px) {
-  .field.span-2 {
-    grid-column: 1 / -1;
+.field.span-4 {
+  grid-column: span 4;
+}
+
+@media (max-width: 680px) {
+  .field,
+  .field.span-4 {
+    grid-column: span 6;
+  }
+  .field.span-6 {
+    grid-column: span 12;
   }
 }
 
 label {
   display: block;
-  font-size: 0.85rem;
-  margin-bottom: 0.25rem;
+  font-size: 0.75rem;
+  color: var(--ash);
+  margin-bottom: 0.1rem;
 }
 
 input,
 select {
   width: 100%;
-  padding: 0.4rem 0.5rem;
+  padding: 0.3rem 0;
   font: inherit;
-  font-size: 0.9rem;
+  font-size: 0.9375rem;
   color: inherit;
-  border: 1px solid var(--line);
-  background: #fff;
+  background: transparent;
+  border: 0;
+  border-bottom: 1px solid var(--rule);
+  border-radius: 0;
+}
+
+select {
+  /* 기본 화살표를 끄고 흑백 삼각형을 직접 그린다 */
+  appearance: none;
+  padding-right: 1.1rem;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='9' height='6'%3E%3Cpath d='M0 0h9L4.5 6z' fill='%23000'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 0.1rem center;
 }
 
 input:focus,
 select:focus {
-  outline: 2px solid var(--text);
-  outline-offset: -1px;
+  outline: none;
+  border-bottom: 2px solid var(--ink);
+  padding-bottom: calc(0.3rem - 1px);
 }
 
-.req {
-  color: var(--bad);
-}
-
-/* 필수는 아니지만 빼면 정확도가 크게 떨어지는 입력 */
-.recommend {
-  display: inline-block;
-  padding: 0 0.3rem;
-  border: 1px solid var(--line);
-  font-size: 0.7rem;
-  font-weight: 500;
-  color: var(--muted);
-  vertical-align: 1px;
-  cursor: help;
+input:focus-visible,
+select:focus-visible,
+button:focus-visible {
+  outline: 2px solid var(--ink);
+  outline-offset: 2px;
 }
 
 select:disabled {
-  background: var(--bg-soft);
-  color: var(--muted);
+  color: var(--ash);
+  border-bottom-style: dashed;
+  background-image: none;
+}
+
+.req {
+  color: var(--ink);
 }
 
 .hint {
-  margin: 0.25rem 0 0;
-  font-size: 0.78rem;
-  color: var(--muted);
+  margin: 0.3rem 0 0;
+  font-size: 0.75rem;
+  line-height: 1.45;
+  color: var(--ash);
 }
 
 .field-error {
-  margin: 0.25rem 0 0;
-  font-size: 0.78rem;
-  color: var(--bad);
-  min-height: 1em;
+  margin: 0.3rem 0 0;
+  font-size: 0.75rem;
+  font-weight: 600;
+  min-height: 1.1em;
 }
+
+/* ---------------------------------------------------------------- 버튼 */
 
 button {
   font: inherit;
-  font-size: 0.9rem;
-  padding: 0.45rem 0.9rem;
-  border: 1px solid var(--text);
-  background: var(--text);
-  color: #fff;
+  font-size: 0.8125rem;
+  padding: 0.5rem 1.1rem;
+  border: 1px solid var(--ink);
+  background: var(--ink);
+  color: var(--paper);
+  border-radius: 0;
   cursor: pointer;
 }
 
 button:disabled {
-  opacity: 0.5;
+  background: var(--paper);
+  color: var(--ash);
+  border-color: var(--rule);
   cursor: progress;
 }
 
 button.ghost {
-  padding: 0.25rem 0.6rem;
-  font-size: 0.8rem;
-  background: #fff;
-  color: var(--text);
-  border-color: var(--line);
+  padding: 0.2rem 0.5rem;
+  font-size: 0.75rem;
+  background: var(--paper);
+  color: var(--ink);
+  border-color: var(--rule);
 }
 
 /* ---------------------------------------------------------------- 탭 */
 
 .tabs {
   display: flex;
-  gap: 0;
-  margin: 1.5rem 0 0;
-  border-bottom: 1px solid var(--line);
+  gap: 1.5rem;
+  margin-top: var(--gap);
+  border-top: 1px solid var(--ink);
+  border-bottom: 1px solid var(--hair);
 }
 
 [role="tab"] {
-  background: none;
-  border: 1px solid transparent;
-  border-bottom: none;
-  color: var(--muted);
-  padding: 0.5rem 1rem;
+  padding: 0.85rem 0;
+  border: 0;
+  border-bottom: 2px solid transparent;
   margin-bottom: -1px;
+  background: none;
+  color: var(--ash);
+  font-size: 0.875rem;
 }
 
 [role="tab"][aria-selected="true"] {
-  color: var(--text);
-  font-weight: 600;
-  border-color: var(--line);
-  background: #fff;
+  color: var(--ink);
+  font-weight: 700;
+  border-bottom-color: var(--ink);
 }
 
 .panel {
-  padding: 1.25rem 0;
+  padding: var(--gap) 0 0;
 }
 
 .run {
-  margin-top: 1rem;
-}
-
-/* ---------------------------------------------------------------- 결과 */
-
-.result {
   margin-top: 1.25rem;
 }
 
-.box {
-  padding: 1rem;
-  border: 1px solid var(--line);
-  background: var(--bg-soft);
+/* ---------------------------------------------------------------- 결과 */
+/* 이 페이지에서 과감한 곳은 여기 하나뿐이다. */
+
+.result:empty {
+  display: none;
 }
 
-.box.bad {
-  border-color: var(--bad);
-  background: #fff;
+.result {
+  margin-top: var(--gap);
 }
 
-.box h3 {
-  margin: 0 0 0.5rem;
+.record {
+  border-top: 3px solid var(--ink);
+  padding-top: 1rem;
 }
 
-.headline {
-  margin: 0 0 0.75rem;
-  font-size: 1.75rem;
-  font-weight: 600;
-  letter-spacing: -0.01em;
+.record-label {
+  margin: 0;
+  font-size: 0.75rem;
+  color: var(--ash);
+}
+
+/* 큰 금액은 본문 폰트로 둔다. 고정폭은 쉼표에도 글자 한 칸을 줘서 '7 , 189' 로 벌어진다.
+ * 자릿수만 고정하면 숫자가 바뀌어도 폭이 흔들리지 않는다. */
+.amount {
+  margin: 0.15rem 0 0;
   font-variant-numeric: tabular-nums;
+  font-size: clamp(2.25rem, 7vw, 3.25rem);
+  font-weight: 700;
+  line-height: 1.02;
+  letter-spacing: -0.03em;
 }
 
-.code-line {
-  margin: 0 0 0.5rem;
-  font-size: 0.8rem;
-  color: var(--muted);
+.amount-unit {
+  margin-left: 0.04em;
+  font-size: 0.38em;
+  font-weight: 600;
+  letter-spacing: 0;
 }
 
-code {
-  font-family: ui-monospace, Consolas, monospace;
-  font-size: 0.85em;
+/* 큰 숫자 하나만 두면 정확해 보인다. 실제 오차를 같이 둔다. */
+.margin-note {
+  margin: 0.6rem 0 0;
+  font-size: 0.8125rem;
+  color: var(--ash);
+}
+
+.margin-note strong {
+  font-variant-numeric: tabular-nums;
+  font-weight: 700;
+  color: var(--ink);
 }
 
 table.kv {
   border-collapse: collapse;
   width: 100%;
-  font-size: 0.88rem;
+  margin-top: 1.5rem;
+  font-size: 0.8125rem;
 }
 
 table.kv th,
 table.kv td {
   text-align: left;
-  padding: 0.35rem 0.5rem;
-  border-top: 1px solid var(--line);
-  vertical-align: top;
+  padding: 0.45rem 0;
+  border-top: 1px solid var(--hair);
+  vertical-align: baseline;
 }
 
 table.kv th {
-  width: 40%;
-  font-weight: 500;
-  color: var(--muted);
+  width: 9.5rem;
+  font-weight: 400;
+  color: var(--ash);
+}
+
+table.kv td {
+  font-family: var(--font-num);
+  font-variant-numeric: tabular-nums;
+}
+
+/* 오류는 색이 아니라 반전된 머리표로 알린다 */
+.record.bad {
+  border-top-color: var(--ink);
+}
+
+.tag {
+  display: inline-block;
+  padding: 0.1rem 0.4rem;
+  background: var(--ink);
+  color: var(--paper);
+  font-size: 0.75rem;
+  font-weight: 600;
+}
+
+.record.bad p {
+  margin: 0.6rem 0 0;
+  font-size: 0.875rem;
 }
 
 .warnings {
-  margin: 0.75rem 0 0;
-  padding: 0.5rem 0.75rem 0.5rem 1.6rem;
-  border-left: 2px solid var(--warn);
-  background: #fff;
-  font-size: 0.82rem;
-  color: var(--warn);
+  list-style: none;
+  margin: 1.25rem 0 0;
+  padding: 0 0 0 0.9rem;
+  border-left: 2px solid var(--ink);
+  font-size: 0.8125rem;
 }
 
 .warnings li + li {
-  margin-top: 0.35rem;
+  margin-top: 0.4rem;
 }
 
 .disclaimer {
-  margin: 0.75rem 0 0;
-  font-size: 0.82rem;
-  color: var(--muted);
+  margin: 1rem 0 0;
+  font-size: 0.75rem;
+  color: var(--ash);
+}
+
+.code-line {
+  margin: 0.4rem 0 0;
+  font-size: 0.75rem;
+  color: var(--ash);
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .amount {
+    animation: settle 0.18s ease-out;
+  }
+}
+
+/* 결과가 바뀐 것만 알리는 짧은 움직임. 그 외에는 애니메이션을 쓰지 않는다. */
+@keyframes settle {
+  from {
+    opacity: 0;
+    transform: translateY(2px);
+  }
 }

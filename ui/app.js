@@ -24,6 +24,13 @@ let locations = null;
 
 // ---------------------------------------------------------------- 숫자 표시
 
+/**
+ * 배포된 모델의 test 구간 평균오차(MAE). 큰 숫자 하나만 띄우면 그 값이 정확한 것처럼
+ * 보이므로 같이 표시한다. **모델을 다시 학습하면 이 값도 고쳐야 한다** —
+ * 출처는 docs/MODEL_PLAN.md §1 의 배포본 행이다.
+ */
+const MODEL_MAE_KRW = 112_000_000;
+
 /** 2350000000 → "23억 5,000만원" */
 function formatKrw(value) {
   if (value === null || value === undefined) return "-";
@@ -40,6 +47,20 @@ function formatKrw(value) {
   if (manwon) parts.push(`${manwon.toLocaleString("ko-KR")}만`);
   if (parts.length === 0) return `${sign}${abs.toLocaleString("ko-KR")}원`;
   return `${sign}${parts.join(" ")}원`;
+}
+
+/** 큰 금액 표시용. 숫자는 크게, 단위(억·만원)는 작게 깐다. */
+function amountMarkup(value) {
+  const text = formatKrw(value);
+  const marked = text.replace(/[억만원]/g, (unit) => `<span class="amount-unit">${unit}</span>`);
+  return `<p class="amount">${marked}</p>`;
+}
+
+/** 1.12억 같은 짧은 표기. 오차처럼 자릿수가 중요하지 않은 값에 쓴다. */
+function formatEok(value) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return "-";
+  return `${(n / 100_000_000).toFixed(2)}억`;
 }
 
 function formatWon(value) {
@@ -152,7 +173,7 @@ function showIssues(issues) {
 
 function renderError(container, error) {
   if (!(error instanceof ApiError)) {
-    container.innerHTML = `<div class="box bad"><h3>알 수 없는 오류</h3><p>${escapeHtml(
+    container.innerHTML = `<div class="record bad"><span class="tag">알 수 없는 오류</span><p>${escapeHtml(
       String(error?.message ?? error),
     )}</p></div>`;
     return;
@@ -195,10 +216,10 @@ function renderError(container, error) {
     : "";
   const status = error.status ? `HTTP ${error.status} · ` : "";
 
-  container.innerHTML = `<div class="box bad">
-      <h3>${escapeHtml(title)}</h3>
-      <p class="code-line">${status}<code>${escapeHtml(error.code)}</code></p>
+  container.innerHTML = `<div class="record bad">
+      <span class="tag">${escapeHtml(title)}</span>
       <p>${body}</p>
+      <p class="code-line">${status}<code>${escapeHtml(error.code)}</code></p>
       ${requestId}
     </div>`;
 }
@@ -243,9 +264,13 @@ function rows(pairs) {
 // ---------------------------------------------------------------- 결과 표시
 
 function renderPrice(container, data) {
-  container.innerHTML = `<div class="box">
-      <h3>예상 거래가격</h3>
-      <p class="headline">${escapeHtml(formatKrw(data.predicted_price_krw))}</p>
+  container.innerHTML = `<div class="record">
+      <p class="record-label">예상 거래가격</p>
+      ${amountMarkup(data.predicted_price_krw)}
+      <p class="margin-note">
+        이 모델은 실제 거래가격을 평균 <strong>±${escapeHtml(formatEok(MODEL_MAE_KRW))}</strong>
+        차이로 맞힙니다. 한 건의 정답이 아니라 추정 범위로 보세요.
+      </p>
       ${rows([
         ["정확한 금액", formatWon(data.predicted_price_krw)],
         ["사용 모델", data.model_name ?? "-"],
@@ -256,9 +281,9 @@ function renderPrice(container, data) {
 
 function renderAnomaly(container, data) {
   const verdict = data.is_suspicious ? "의심" : "의심 아님";
-  container.innerHTML = `<div class="box">
-      <h3>이상거래 의심 판정</h3>
-      <p class="headline">${escapeHtml(verdict)}</p>
+  container.innerHTML = `<div class="record">
+      <p class="record-label">이상거래 의심 판정</p>
+      <p class="amount">${escapeHtml(verdict)}</p>
       ${rows([
         ["의심 점수", `${formatPct(data.suspicion_score * 100)} (임계값 ${formatPct(data.threshold * 100)})`],
         ["기준가격", data.reference_price_krw === null ? "없음 (가격 모델 미준비)" : formatKrw(data.reference_price_krw)],
@@ -273,9 +298,10 @@ function renderScenario(container, data) {
   const diff = Number(data.price_diff_krw);
   const direction = diff > 0 ? "상승" : diff < 0 ? "하락" : "변화 없음";
 
-  container.innerHTML = `<div class="box">
-      <h3>금리 변경 시 예측가격 비교</h3>
-      <p class="headline">${escapeHtml(formatKrw(Math.abs(diff)))} ${escapeHtml(direction)}</p>
+  container.innerHTML = `<div class="record">
+      <p class="record-label">금리 변경 시 예측가격 비교</p>
+      ${amountMarkup(Math.abs(diff))}
+      <p class="margin-note">${escapeHtml(direction)}</p>
       ${rows([
         [`변경 전 (${formatPct(data.base_rate_before)})`, formatKrw(data.predicted_price_before_krw)],
         [`변경 후 (${formatPct(data.base_rate_after)})`, formatKrw(data.predicted_price_after_krw)],
@@ -352,7 +378,7 @@ async function handleRun(name, button) {
 
   if (Object.keys(errors).length > 0) {
     showFieldErrors(errors);
-    container.innerHTML = `<div class="box bad"><h3>입력값 확인 필요</h3><p>표시된 항목을 채운 뒤 다시 실행하세요.</p></div>`;
+    container.innerHTML = `<div class="record bad"><span class="tag">입력값 확인 필요</span><p>표시된 항목을 채운 뒤 다시 실행하세요.</p></div>`;
     return;
   }
 
@@ -370,20 +396,31 @@ async function handleRun(name, button) {
 
 // ---------------------------------------------------------------- 서버 상태
 
+function setStatus(id, text, ready) {
+  const el = $(id);
+  el.textContent = text;
+  el.dataset.state = ready ? "on" : "off";
+}
+
 async function refreshHealth() {
-  const el = $("health-text");
-  el.className = "health";
-  el.textContent = "서버 상태 확인 중…";
+  ["health-server", "health-price", "health-anomaly"].forEach((id) =>
+    setStatus(id, "확인 중", false),
+  );
 
   try {
     const health = await getHealth();
-    const price = health.models?.price;
-    const anomaly = health.models?.anomaly;
-    el.textContent = `서버 v${health.version} · 가격모델 ${price ? "준비됨" : "미준비"} · 이상거래모델 ${anomaly ? "준비됨" : "미준비"}`;
-    el.classList.add(price && anomaly ? "ok" : "warn");
+    setStatus("health-server", `v${health.version}`, true);
+    setStatus("health-price", health.models?.price ? "준비됨" : "미준비", health.models?.price);
+    setStatus(
+      "health-anomaly",
+      health.models?.anomaly ? "준비됨" : "미준비",
+      health.models?.anomaly,
+    );
   } catch (error) {
-    el.textContent = error instanceof ApiError ? error.message : "서버 상태를 확인할 수 없습니다.";
-    el.classList.add("bad");
+    setStatus("health-server", "연결 안 됨", false);
+    setStatus("health-price", "-", false);
+    setStatus("health-anomaly", "-", false);
+    if (!(error instanceof ApiError)) throw error;
   }
 }
 
