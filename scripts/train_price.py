@@ -38,13 +38,14 @@ import numpy as np
 import pandas as pd
 
 from apartment_ml import schemas as S
+from apartment_ml.config import get_settings
 from apartment_ml.evaluation.metrics import regression_metrics
 from apartment_ml.evaluation.split import TimeSplit, time_based_split
+from apartment_ml.models.complex_directory import ComplexDirectory
 from apartment_ml.models.market_index import MarketIndex
 from apartment_ml.models.regression import REGRESSOR_FACTORIES, PriceRegressionModel
 
 DEFAULT_DATA = Path("data/processed/training_dataset.csv")
-DEFAULT_OUT = Path("models/price_regression.joblib")
 AREA_BAND = 10.0
 
 
@@ -119,7 +120,16 @@ def monthly_bias(split: TimeSplit, pred: np.ndarray) -> None:
 def main() -> None:
     parser = argparse.ArgumentParser(description="가격 회귀 모델 학습·비교")
     parser.add_argument("--data", type=Path, default=DEFAULT_DATA)
-    parser.add_argument("--out", type=Path, default=DEFAULT_OUT)
+    # 기본 경로는 설정에서 가져온다. API 가 읽는 경로와 어긋나면 모델을 못 찾는다.
+    parser.add_argument(
+        "--out", type=Path, default=None, help="기본값: settings 의 price_model_path"
+    )
+    parser.add_argument(
+        "--directory-out",
+        type=Path,
+        default=None,
+        help="기본값: settings 의 complex_directory_path",
+    )
     parser.add_argument(
         "--models", nargs="+", default=list(REGRESSOR_FACTORIES), choices=list(REGRESSOR_FACTORIES)
     )
@@ -191,11 +201,19 @@ def main() -> None:
     )
 
     monthly_bias(split, pred_test)
-    args.out.parent.mkdir(parents=True, exist_ok=True)
+
+    settings = get_settings()
+    out = args.out or settings.price_model_path
+    out.parent.mkdir(parents=True, exist_ok=True)
     print(
         f"\n저장: {name}, train+valid {deployed.metadata['n_train']:,}건 학습, "
-        f"보정계수 {factor:.4f} -> {deployed.save(args.out)}"
+        f"보정계수 {factor:.4f} -> {deployed.save(out)}"
     )
+
+    # 단지 목록: API 가 프론트에 내려줄 선택 목록. 모델이 학습한 구간과 같게 만든다.
+    directory = ComplexDirectory.build(pd.concat([split.train, split.valid]))
+    directory_out = args.directory_out or settings.complex_directory_path
+    print(f"단지 목록: {len(directory):,}개 단지 -> {directory.save(directory_out)}")
 
 
 def _date_range(part: pd.DataFrame) -> list[str]:

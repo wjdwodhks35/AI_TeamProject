@@ -41,6 +41,7 @@ MIN_PRICE_KRW = 1  # 0 이하 금지
 MAX_PRICE_KRW = 1_000_000_000_000  # 1조원: 입력 오류 방지용 상한
 MIN_BASE_RATE = -1.0
 MAX_BASE_RATE = 20.0
+MAX_NAME_LENGTH = 60  # 동명·단지 일련번호 등 짧은 문자열 입력 상한
 
 # 금액 단위: 국토교통부 원본은 '만원' 단위 → 내부는 '원(KRW)' 정수
 MANWON_TO_KRW = 10_000
@@ -480,6 +481,18 @@ class RegulationInfo(BaseModel):
         }
 
 
+def _blank_to_none(value: str | None) -> str | None:
+    """빈 문자열은 '값 없음' 과 같게 다룬다.
+
+    프론트의 select 는 미선택을 "" 로 보내는 일이 흔하고, 그대로 두면 위치 인코더가
+    ''를 별도 범주로 보게 된다.
+    """
+    if value is None:
+        return None
+    stripped = value.strip()
+    return stripped or None
+
+
 class ApartmentFeatures(BaseModel):
     """거래 조건(가격 제외). 가격 예측·금리 시나리오·이상거래 판정의 공통 입력."""
 
@@ -494,6 +507,20 @@ class ApartmentFeatures(BaseModel):
         None, ge=MIN_BASE_RATE, le=MAX_BASE_RATE, description="기준금리(%)"
     )
     regulation: RegulationInfo | None = None
+    # 동·단지는 회귀의 위치 인코딩 입력이다. 없으면 자치구 수준 추정으로 떨어지는데,
+    # 같은 모델로 test 를 재면 MAE 1.41억 -> 4.18억, R2 0.935 -> 0.499 로 기준선(0.603)
+    # 보다도 낮아진다. 그래서 선택 입력이지만 **되도록 받아야 하는** 값이다.
+    # `complex_id` 는 국토부 단지 일련번호(aptSeq)이고, 고를 수 있는 목록은
+    # GET /locations/{자치구} 가 내려준다 (models/complex_directory.py).
+    dong: str | None = Field(
+        None, max_length=MAX_NAME_LENGTH, description="법정동 (예: 대치동)", examples=["대치동"]
+    )
+    complex_id: str | None = Field(
+        None,
+        max_length=MAX_NAME_LENGTH,
+        description="단지 일련번호(aptSeq). GET /locations/{자치구} 참고",
+        examples=["11680-2234"],
+    )
 
     @field_validator("district")
     @classmethod
@@ -505,6 +532,8 @@ class ApartmentFeatures(BaseModel):
 
     def to_record(self) -> dict[str, object]:
         """DataFrame 1행으로 변환할 수 있는 dict (내부 표준 컬럼명)."""
+        dong = _blank_to_none(self.dong)
+        complex_id = _blank_to_none(self.complex_id)
         record: dict[str, object] = {
             DISTRICT: self.district,
             CONTRACT_DATE: self.contract_date,
@@ -512,6 +541,10 @@ class ApartmentFeatures(BaseModel):
             FLOOR: self.floor,
             BUILT_YEAR: self.built_year,
             BASE_RATE: self.base_rate,
+            # 단지가 없으면 동도 쓰지 않는다. 측정값: 동·단지 모두 없음 MAE 4.18억,
+            # 동만 있고 단지 없음 4.85억 — 학습 때 본 적 없는 조합이라 오히려 더 나쁘다.
+            DONG: dong if complex_id else None,
+            COMPLEX_ID: complex_id,
         }
         record.update((self.regulation or RegulationInfo()).to_columns())
         return record

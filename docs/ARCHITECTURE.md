@@ -55,6 +55,7 @@ api.main / api.schemas    (PricePredictor / AnomalyDetector 계약에만 의존)
 | `models/*` | 모델 래퍼, 레지스트리, 저장/불러오기 | feature/ml |
 | `models/market_index.py` | 직전월 자치구 평당가 지수 — 회귀의 시점 흐름 처리 (회귀 전용) | feature/ml |
 | `models/location_price.py` | 동·단지를 '그 위치의 평균 가격수준' 숫자로 요약 (회귀 전용) | feature/ml |
+| `models/complex_directory.py` | 자치구 → 동 → 단지 목록 — API 의 단지 선택 입력용 참조 표 | feature/ml |
 | `scenarios/interest_rate.py` | 금리 조건 비교 | feature/scenario |
 | `api/*` | FastAPI 엔드포인트, 요청·응답 스키마 | feature/ui |
 | `pipeline.py` | 합성 샘플 데이터로 공통 기반을 점검하는 최소 실행 경로 | 공통 |
