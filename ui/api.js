@@ -103,6 +103,17 @@ export function getLocations(district) {
 }
 
 /**
+ * GET /regulation/{자치구}?on=YYYY-MM-DD — 그 날 그 자치구에 걸려 있던 규제.
+ *
+ * 투기과열지구·조정대상지역·토지거래허가구역은 고시로 정해진 사실이라 사용자가
+ * 고를 값이 아니다. 예측 요청에도 서버가 알아서 채우므로, 화면은 확인용으로만 쓴다.
+ */
+export function getRegulation(district, on) {
+  const query = on ? `?on=${encodeURIComponent(on)}` : "";
+  return request(`/regulation/${encodeURIComponent(district)}${query}`);
+}
+
+/**
  * POST /forecast/price — 향후 N개월 예상 거래가격.
  *
  * 회귀가 시세 대비 상대가격을 학습해서, 미래 가격은 시장지수만 내다보면 된다.

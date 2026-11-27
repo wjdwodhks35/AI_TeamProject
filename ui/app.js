@@ -6,6 +6,7 @@ import {
   getHealth,
   forecastPrice,
   getLocations,
+  getRegulation,
   predictAnomaly,
   predictPrice,
   scenarioInterestRate,
@@ -26,11 +27,24 @@ let useMock = false;
 let locations = null;
 
 /**
+ * 지금 고른 단지. 목록을 다시 그려도(동 변경·검색) 이 값으로 선택을 되살린다.
+ * select 의 value 만 믿으면, 검색어가 하나도 안 맞는 순간 목록이 비면서 고른
+ * 단지가 조용히 풀린다. 단지가 빠지면 평균오차가 1.41억 -> 4.18억이라 그냥
+ * 넘길 수 없다.
+ */
+let selectedComplex = null;
+
+/** 자치구를 고르고 나서의 단지 안내문. 검색 상태를 띄웠다가 되돌릴 때 쓴다. */
+let complexHintBase = "";
+
+/**
  * 배포된 회귀 모델의 test 구간 평균오차(MAE). 큰 숫자 하나만 띄우면 그 값이 정확한
  * 것처럼 보여서 같이 보여준다. **모델을 다시 학습하면 이 값도 고쳐야 한다** —
  * 출처는 docs/MODEL_PLAN.md 1장의 배포본 행이다.
  */
 const MODEL_MAE_KRW = 112_000_000;
+
+const BUILT_YEAR_HINT = "1950 ~ 2030, 비워도 됨. 단지를 고르면 자동으로 들어갑니다.";
 
 // ---------------------------------------------------------------- 숫자 표시
 
@@ -74,15 +88,6 @@ function numberOrUndefined(input) {
   if (raw === "") return undefined;
   const n = Number(raw);
   return Number.isFinite(n) ? n : NaN;
-}
-
-function regulationOrUndefined() {
-  const entries = [...document.querySelectorAll("[data-reg]")].map((el) => [
-    el.dataset.reg,
-    el.value === "" ? null : el.value === "true",
-  ]);
-  if (entries.every(([, v]) => v === null)) return undefined;
-  return Object.fromEntries(entries);
 }
 
 /**
@@ -129,8 +134,8 @@ function collectFeatures() {
   const directDeal = $("is_direct_deal").value;
   if (directDeal !== "") features.is_direct_deal = directDeal === "1";
 
-  const regulation = regulationOrUndefined();
-  if (regulation !== undefined) features.regulation = regulation;
+  // 규제는 보내지 않는다. 자치구와 계약일만 있으면 정해지는 값이라 서버가
+  // 고시 이력에서 직접 채운다 (GET /regulation/{자치구} 가 같은 값을 보여준다).
 
   return { features, errors };
 }
@@ -660,41 +665,102 @@ function setPlaceholder(select, text) {
   select.disabled = true;
 }
 
-/** 단지 목록을 채운다. 동이 선택돼 있으면 그 동만, 아니면 전체. 거래 많은 순. */
+/** 검색어 정규화: 공백을 지워 "래미안 원베일리" 로도 "래미안원베일리" 가 걸리게. */
+function normalize(text) {
+  return text.replace(/\s+/g, "").toLowerCase();
+}
+
+/**
+ * 단지 목록을 채운다. 동이 골라져 있으면 그 동만, 검색어가 있으면 이름이 맞는 것만.
+ * 거래 많은 순 — 위쪽 몇 개가 사실상 그 동의 대표 단지다.
+ *
+ * 25개 자치구 중에는 단지가 700개 넘는 곳도 있어서 펼침 목록만으로는 못 찾는다.
+ * 검색은 동 선택을 건너뛰는 지름길이라, 검색어가 있으면 동 필터는 무시한다.
+ */
 function fillComplexes(dong) {
   const select = $("complex_id");
+  const hint = $("complex-hint");
   if (!locations) return;
 
+  const raw = $("complex_search").value.trim();
+  const query = normalize(raw);
+
   const items = locations.complexes
-    .filter((c) => !dong || c.dong === dong)
+    .filter((c) => (query ? normalize(c.apartment_name).includes(query) : !dong || c.dong === dong))
     .slice()
     .sort((a, b) => b.n_deals - a.n_deals);
 
-  if (items.length === 0) {
-    setPlaceholder(select, "해당 동에 단지가 없습니다");
-    return;
+  // 고른 단지가 지금 조건에 안 걸려도 목록 맨 위에 남긴다. 검색을 잘못 쳤다고
+  // 선택이 풀리면 사용자는 풀린 줄도 모르고 자치구 평균 예측을 받게 된다.
+  const shown = items.slice();
+  if (selectedComplex && !shown.some((c) => c.complex_id === selectedComplex.complex_id)) {
+    shown.unshift(selectedComplex);
   }
 
-  const label = (c) =>
-    `${dong ? "" : `${c.dong} `}${c.apartment_name} (${c.n_deals.toLocaleString("ko-KR")}건)`;
+  if (shown.length === 0) {
+    setPlaceholder(select, query ? "맞는 단지 없음" : "해당 동에 단지가 없습니다");
+  } else {
+    // 동이 정해져 있고 검색 중이 아니면 동 이름은 줄마다 되풀이하지 않는다.
+    const showDong = Boolean(query) || !dong;
+    const label = (c) =>
+      `${showDong ? `${c.dong} ` : ""}${c.apartment_name} (${c.n_deals.toLocaleString("ko-KR")}건)`;
 
-  select.innerHTML =
-    `<option value="">선택 안 함</option>` +
-    items
-      .map(
-        (c) =>
-          `<option value="${escapeHtml(c.complex_id)}" data-dong="${escapeHtml(c.dong)}">` +
-          `${escapeHtml(label(c))}</option>`,
-      )
-      .join("");
-  select.disabled = false;
+    select.innerHTML =
+      `<option value="">선택 안 함</option>` +
+      shown
+        .map(
+          (c) =>
+            `<option value="${escapeHtml(c.complex_id)}" data-dong="${escapeHtml(c.dong)}"` +
+            ` data-built-year="${c.built_year ?? ""}">` +
+            `${escapeHtml(label(c))}</option>`,
+        )
+        .join("");
+    select.disabled = false;
+    if (selectedComplex) select.value = selectedComplex.complex_id;
+  }
+
+  if (!query) hint.textContent = complexHintBase;
+  else if (items.length === 0) hint.textContent = `'${raw}' 에 맞는 단지가 없습니다.`;
+  else hint.textContent = `'${raw}' 검색 결과 ${items.length.toLocaleString("ko-KR")}개.`;
+}
+
+/**
+ * 단지를 고르면 그 단지에서 정해지는 값들을 같이 채운다.
+ *
+ * 지금은 준공연도 하나뿐이다. 면적·층은 같은 단지 안에서도 집마다 달라서 채울 수 없다.
+ */
+function applyComplex(option) {
+  const id = option?.value || "";
+  selectedComplex = id ? locations?.complexes.find((c) => c.complex_id === id) ?? null : null;
+
+  const dong = option?.dataset.dong;
+  if (dong) $("dong").value = dong;
+
+  const builtYear = option?.dataset.builtYear;
+  const input = $("built_year");
+  const hint = $("built-year-hint");
+  if (builtYear) {
+    input.value = builtYear;
+    hint.textContent = `${option.textContent.trim().split(" (")[0]} 준공연도입니다. 고치면 그 값이 쓰입니다.`;
+  } else if (option?.value) {
+    hint.textContent = "이 단지는 준공연도가 없어 비워 뒀습니다. 알면 직접 넣으세요.";
+  } else {
+    hint.textContent = BUILT_YEAR_HINT;
+  }
 }
 
 async function loadLocations(district) {
   const dongSelect = $("dong");
   const complexSelect = $("complex_id");
+  const search = $("complex_search");
   const hint = $("complex-hint");
   locations = null;
+
+  // 자치구가 바뀌면 이전 자치구의 단지·검색어는 모두 무효다.
+  search.value = "";
+  search.disabled = true;
+  selectedComplex = null;
+  $("built-year-hint").textContent = BUILT_YEAR_HINT;
 
   if (!district) {
     setPlaceholder(dongSelect, "자치구를 먼저 선택");
@@ -720,9 +786,10 @@ async function loadLocations(district) {
     return;
   }
 
-  hint.textContent =
+  complexHintBase =
     `${district} 단지 ${locations.complexes.length.toLocaleString("ko-KR")}개. ` +
     `비워 두면 자치구 평균으로만 추정해서 오차가 3배 가까이 커집니다.`;
+  hint.textContent = complexHintBase;
 
   dongSelect.innerHTML =
     `<option value="">전체</option>` +
@@ -730,7 +797,49 @@ async function loadLocations(district) {
       .map((d) => `<option value="${escapeHtml(d)}">${escapeHtml(d)}</option>`)
       .join("");
   dongSelect.disabled = false;
+  search.disabled = false;
   fillComplexes("");
+}
+
+// ---------------------------------------------------------------- 규제 표시
+
+/**
+ * 규제는 입력칸이 아니라 표시만 한다. 자치구와 계약일이 정해지면 고시 이력에서
+ * 한 가지 답이 나오는 값이라, 사용자가 고를 여지가 없다. 예측 요청에서도 서버가
+ * 같은 이력으로 채우므로 여기 보이는 것과 모델이 받는 값이 같다.
+ */
+async function refreshRegulation() {
+  const line = $("regulation-state");
+  const district = $("district").value;
+  const on = $("contract_date").value;
+
+  if (!district || !on) {
+    line.textContent = "자치구와 계약일을 고르면 여기에 표시됩니다.";
+    return;
+  }
+
+  line.textContent = "확인 중…";
+  let state;
+  try {
+    state = await getRegulation(district, on);
+  } catch (error) {
+    line.textContent =
+      error instanceof ApiError && error.code === "MODEL_NOT_READY"
+        ? "규제 이력을 서버에서 읽지 못했습니다. 예측은 규제 없음으로 계산됩니다."
+        : "규제 상태를 확인하지 못했습니다.";
+    return;
+  }
+
+  const on_ = [
+    state.speculation_overheated && "투기과열지구",
+    state.adjustment_target && "조정대상지역",
+    state.land_permit && "토지거래허가구역",
+  ].filter(Boolean);
+
+  line.textContent =
+    on_.length === 0
+      ? `${state.on} 기준 ${state.district}: 해당 없음`
+      : `${state.on} 기준 ${state.district}: ${on_.join(", ")}`;
 }
 
 function setupLocations() {
@@ -738,11 +847,19 @@ function setupLocations() {
   $("district").addEventListener("change", (event) => loadLocations(event.target.value));
   $("dong").addEventListener("change", (event) => fillComplexes(event.target.value));
 
-  // 동을 비워 둔 채로 단지를 고르면 그 단지의 동을 자동으로 맞춰 준다.
+  // 단지를 고르면 그 단지의 동과 준공연도를 같이 맞춰 준다.
   $("complex_id").addEventListener("change", (event) => {
-    const dong = event.target.selectedOptions[0]?.dataset.dong;
-    if (dong && !$("dong").value) $("dong").value = dong;
+    applyComplex(event.target.selectedOptions[0]);
   });
+
+  // 검색은 동 선택과 같은 목록을 다시 그린다.
+  $("complex_search").addEventListener("input", () => fillComplexes($("dong").value));
+}
+
+function setupRegulation() {
+  $("district").addEventListener("change", refreshRegulation);
+  $("contract_date").addEventListener("change", refreshRegulation);
+  refreshRegulation();
 }
 
 function setupTabs() {
@@ -787,6 +904,7 @@ function setupRunButtons() {
 
 setupDistricts();
 setupLocations();
+setupRegulation();
 setupDistrictMap($("district-map"), $("district"));
 setupTabs();
 setupPriceHint();

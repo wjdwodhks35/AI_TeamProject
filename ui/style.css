@@ -206,8 +206,10 @@ button.ghost {
 }
 
 /* --gu-h 는 map.js 가 구마다 넣어주는 색상환 각도다. */
+/* 채도를 8% 까지 내렸다. 거의 무채색이지만 맞닿은 구끼리는 미세하게 달라
+ * 경계가 읽힌다 (색상환 배치는 map.js 의 DISTRICT_HUE). */
 .gu path {
-  fill: hsl(var(--gu-h), 45%, 80%);
+  fill: hsl(var(--gu-h), 8%, 88%);
   stroke: #fff;
   stroke-width: 1.2;
   cursor: pointer;
@@ -215,15 +217,16 @@ button.ghost {
 }
 
 .gu:hover path {
-  fill: hsl(var(--gu-h), 55%, 68%);
+  fill: hsl(var(--gu-h), 10%, 76%);
 }
 
 .gu.selected path {
-  fill: hsl(var(--gu-h), 55%, 32%);
+  fill: #2b2b2b;
 }
 
 .gu text {
-  font-size: 13px;
+  /* 확대하면 글자도 같이 커지므로 배율만큼 되돌린다 (map.js 가 --map-scale 을 준다). */
+  font-size: calc(13px * var(--map-scale, 1));
   text-anchor: middle;
   dominant-baseline: middle;
   fill: #3c3c3c;
@@ -233,6 +236,27 @@ button.ghost {
 
 .gu.selected text {
   fill: #fff;
+}
+
+/* 확대했을 때 전체로 돌아가는 단추. 지도 위에 겹쳐 둔다. */
+.district-map {
+  position: relative;
+}
+
+.map-reset {
+  position: absolute;
+  top: 0.4rem;
+  left: 0.4rem;
+  padding: 0.2rem 0.5rem;
+  font-size: 0.75rem;
+  background: #fff;
+  color: var(--text);
+  border: 1px solid var(--line);
+  cursor: pointer;
+}
+
+.map-reset:hover {
+  border-color: var(--text);
 }
 
 /* ---------------------------------------------------------------- 탭 */
@@ -415,4 +439,26 @@ table.kv th {
 
 .reasons li + li {
   margin-top: 0.25rem;
+}
+
+/* 단지는 수백 개라 펼침 목록만으로는 못 찾는다. 검색칸을 목록 바로 위에 붙인다. */
+#complex_search {
+  margin-bottom: 0.3rem;
+}
+
+#complex_id[size] {
+  height: auto;
+  padding: 0.2rem;
+}
+
+#complex_id[size] option {
+  padding: 0.15rem 0.3rem;
+}
+
+/* 규제는 입력이 아니라 서버가 정한 사실이다. 읽는 줄처럼 보이게 둔다. */
+#regulation-state {
+  color: var(--text);
+  border-left: 2px solid var(--line);
+  padding-left: 0.6rem;
+  margin-top: 0.5rem;
 }

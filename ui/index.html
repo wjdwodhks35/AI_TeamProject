@@ -49,8 +49,15 @@
             </div>
 
             <div class="field">
-              <label for="complex_id">단지</label>
-              <select id="complex_id" name="complex_id" disabled>
+              <label for="complex_search">단지</label>
+              <input
+                type="search"
+                id="complex_search"
+                placeholder="단지 이름으로 찾기"
+                autocomplete="off"
+                disabled
+              />
+              <select id="complex_id" name="complex_id" size="6" disabled>
                 <option value="">자치구를 먼저 선택</option>
               </select>
               <p class="hint" id="complex-hint">
@@ -86,7 +93,7 @@
           <div class="field">
             <label for="built_year">준공연도</label>
             <input type="number" id="built_year" name="built_year" min="1950" max="2030" step="1" placeholder="2008" />
-            <p class="hint">1950 ~ 2030, 비워도 됨</p>
+            <p class="hint" id="built-year-hint">1950 ~ 2030, 비워도 됨. 단지를 고르면 자동으로 들어갑니다.</p>
             <p class="field-error" data-error-for="built_year"></p>
           </div>
 
@@ -110,33 +117,12 @@
         </div>
 
         <h3>규제 (계약일 시점)</h3>
-        <p class="hint">모르는 항목은 '미지정'으로 두면 해당 값을 보내지 않습니다.</p>
-        <div class="field-grid">
-          <div class="field">
-            <label for="speculation_overheated">투기과열지구</label>
-            <select id="speculation_overheated" data-reg="speculation_overheated">
-              <option value="">미지정</option>
-              <option value="true">해당</option>
-              <option value="false">비해당</option>
-            </select>
-          </div>
-          <div class="field">
-            <label for="adjustment_target">조정대상지역</label>
-            <select id="adjustment_target" data-reg="adjustment_target">
-              <option value="">미지정</option>
-              <option value="true">해당</option>
-              <option value="false">비해당</option>
-            </select>
-          </div>
-          <div class="field">
-            <label for="land_permit">토지거래허가구역</label>
-            <select id="land_permit" data-reg="land_permit">
-              <option value="">미지정</option>
-              <option value="true">해당</option>
-              <option value="false">비해당</option>
-            </select>
-          </div>
-        </div>
+        <p class="hint">
+          투기과열지구·조정대상지역·토지거래허가구역은 자치구와 계약일만 있으면 정해지는
+          값이라 서버가 지정 고시 이력에서 직접 찾아 넣습니다. 따로 입력하지 않습니다.
+        </p>
+        <p class="hint" id="regulation-state">자치구와 계약일을 고르면 여기에 표시됩니다.</p>
+
       </form>
 
       <div class="tabs" role="tablist" aria-label="기능 선택">

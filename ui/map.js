@@ -14,7 +14,8 @@ const SVG_NS = "http://www.w3.org/2000/svg";
  * 경계를 맞댄 구끼리 색이 비슷해지지 않도록 인접 관계를 계산해 배치했다.
  * 맞닿은 구 사이 색상 거리는 최소 44°다.
  *
- * 실제 색은 style.css 에서 이 값으로 만든다 (채도·명도는 거기서 조절).
+ * 실제 색은 style.css 에서 이 값으로 만든다. 채도를 아주 낮게 줘서 거의 무채색으로
+ * 보이지만, 맞닿은 구끼리는 여전히 미세하게 달라 경계가 읽힌다.
  */
 const DISTRICT_HUE = {
   강남구: 187, 강동구: 72, 강북구: 144, 강서구: 317, 관악구: 43,
@@ -52,15 +53,37 @@ function createDistrict(gu) {
   return group;
 }
 
+const FULL_VIEW = [0, 0, MAP_WIDTH, MAP_HEIGHT];
+const ZOOM_PADDING = 0.18; // 고른 구 둘레에 남기는 여백 (구 크기 대비)
+const ZOOM_MS = 260;
+
+/** 고른 구가 화면을 채우도록 viewBox 를 계산한다. 가로세로 비율은 그대로 둔다. */
+function frameFor(box) {
+  const pad = Math.max(box.width, box.height) * ZOOM_PADDING;
+  const w = box.width + pad * 2;
+  const h = box.height + pad * 2;
+  const ratio = MAP_WIDTH / MAP_HEIGHT;
+  const [fw, fh] = w / h > ratio ? [w, w / ratio] : [h * ratio, h];
+  return [
+    box.x + box.width / 2 - fw / 2,
+    box.y + box.height / 2 - fh / 2,
+    fw,
+    fh,
+  ];
+}
+
 /**
  * 지도를 그리고 select 와 양방향으로 묶는다.
+ *
+ * 자치구를 고르면 그 구로 확대한다. 동 단위 경계 데이터가 없어서 지도에서 동까지
+ * 고르지는 못하고, 확대는 "지금 어디를 보고 있는지" 를 보여주는 역할만 한다.
  *
  * @param {HTMLElement} container 지도를 넣을 자리
  * @param {HTMLSelectElement} select 자치구 값을 들고 있는 요소
  */
 export function setupDistrictMap(container, select) {
   const svg = document.createElementNS(SVG_NS, "svg");
-  svg.setAttribute("viewBox", `0 0 ${MAP_WIDTH} ${MAP_HEIGHT}`);
+  svg.setAttribute("viewBox", FULL_VIEW.join(" "));
   svg.setAttribute("class", "seoul-map");
   // 키보드 사용자는 select 로 고르면 되므로 지도는 보조 수단으로 둔다.
   svg.setAttribute("role", "presentation");
@@ -72,22 +95,82 @@ export function setupDistrictMap(container, select) {
     svg.append(group);
   }
 
-  function highlight() {
+  const reset = document.createElement("button");
+  reset.type = "button";
+  reset.className = "map-reset";
+  reset.textContent = "서울 전체";
+  reset.hidden = true;
+
+  let current = FULL_VIEW.slice();
+  let frame = 0;
+
+  function applyView(view) {
+    svg.setAttribute("viewBox", view.join(" "));
+    // 글자는 사용자 좌표계라 확대하면 같이 커진다. 배율만큼 되돌려 크기를 유지한다.
+    svg.style.setProperty("--map-scale", (view[2] / MAP_WIDTH).toFixed(4));
+  }
+
+  function moveTo(target) {
+    cancelAnimationFrame(frame);
+    const reduced = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
+    const from = current.slice();
+    const start = performance.now();
+    current = target;
+    if (reduced) {
+      applyView(target);
+      return;
+    }
+    const step = (now) => {
+      const t = Math.min((now - start) / ZOOM_MS, 1);
+      const ease = 1 - (1 - t) ** 3;
+      applyView(from.map((v, i) => v + (target[i] - v) * ease));
+      if (t < 1) frame = requestAnimationFrame(step);
+    };
+    frame = requestAnimationFrame(step);
+  }
+
+  /** 고른 구를 칠한다. 확대 여부와는 별개다 — 전체 지도에서도 어디를 골랐는지 보여야 한다. */
+  function paint() {
     for (const [name, group] of groups) {
       group.classList.toggle("selected", name === select.value);
     }
   }
 
+  /** 한 구로 확대하거나(name), 서울 전체로 되돌린다(null). 선택은 건드리지 않는다. */
+  function zoomTo(name) {
+    const chosen = name ? groups.get(name) : null;
+    svg.classList.toggle("zoomed", Boolean(chosen));
+    reset.hidden = !chosen;
+    moveTo(chosen ? frameFor(chosen.querySelector("path").getBBox()) : FULL_VIEW.slice());
+  }
+
   svg.addEventListener("click", (event) => {
     const group = event.target.closest(".gu");
     if (!group) return;
-    select.value = group.dataset.district;
+    const name = group.dataset.district;
+
+    // 이미 고른 구를 다시 누르면 확대만 한다. change 를 또 쏘면 동·단지 목록을
+    // 다시 받아 오면서 골라 둔 단지가 풀린다.
+    if (select.value === name) {
+      zoomTo(name);
+      return;
+    }
+
+    select.value = name;
     // 값을 코드로 바꾸면 change 가 자동으로 나지 않으므로 직접 알린다.
     select.dispatchEvent(new Event("change", { bubbles: true }));
   });
 
-  select.addEventListener("change", highlight);
+  // 전체 보기로 돌아갈 뿐, 고른 자치구는 그대로 둔다. 여기서 선택까지 풀면
+  // 동·단지·준공연도가 같이 날아간다.
+  reset.addEventListener("click", () => zoomTo(null));
 
-  container.replaceChildren(svg);
-  highlight();
+  select.addEventListener("change", () => {
+    paint();
+    zoomTo(select.value || null);
+  });
+
+  container.replaceChildren(svg, reset);
+  paint();
+  zoomTo(select.value || null);
 }
