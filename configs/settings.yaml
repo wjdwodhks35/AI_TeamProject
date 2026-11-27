@@ -35,5 +35,9 @@ models:
   complex_directory_path: models/complex_directory.json
 
 classification:
-  # 이상거래 레이블의 정의·생성 기준이 확정되기 전까지 false 를 유지합니다.
-  training_enabled: false
+  # 레이블 기준을 확정해서 켰습니다. 기준은 label_anomalies(direction="below"):
+  # 같은 자치구·평형대 기준가보다 1단계 20%, 2단계 30% 이상 **싼** 거래를 1 로 둡니다.
+  # 비싼 쪽은 제외했습니다 - 직거래 비율이 전체 평균(2.74%)보다도 낮아서(1.36%)
+  # '기준가에서 벗어났다' 외에 공통점이 보이지 않기 때문입니다. 자세한 비교는
+  # docs/MODEL_PLAN.md 를 보세요.
+  training_enabled: true

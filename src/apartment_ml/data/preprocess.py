@@ -504,10 +504,14 @@ def label_anomalies(
 
     limits = DEFAULT_ANOMALY_THRESHOLDS if thresholds is None else thresholds
     out = df.copy()
+    # CSV 에서 다시 읽으면 두 컬럼이 문자열로 돌아온다. 숫자로 맞춰 두지 않으면
+    # 단계 비교('1' == 1)가 전부 거짓이 되어 레이블이 통째로 비어 버린다.
+    tiers = pd.to_numeric(out[S.PEER_TIER], errors="coerce")
+    ratios = pd.to_numeric(out[S.PRICE_RATIO], errors="coerce")
     label = pd.Series(pd.NA, index=out.index, dtype="Int64")
     for tier, limit in limits.items():
-        target = (out[S.PEER_TIER] == tier) & out[S.PRICE_RATIO].notna()
-        ratio = out.loc[target, S.PRICE_RATIO]
+        target = (tiers == tier) & ratios.notna()
+        ratio = ratios[target]
         hit = ratio < 1 - limit
         if direction == "both":
             hit = hit | (ratio > 1 + limit)

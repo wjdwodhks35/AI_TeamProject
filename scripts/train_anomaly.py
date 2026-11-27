@@ -1,4 +1,15 @@
-"""승인된 이상거래 레이블로 분류 모델을 학습하고 백엔드용 모델을 저장한다."""
+"""승인된 이상거래 레이블로 분류 모델을 학습하고 백엔드용 모델을 저장한다.
+
+레이블은 기준가(``price_ratio``, ``peer_tier``)가 있으면 학습 시점에
+``label_anomalies`` 로 다시 만든다. 어떤 기준으로 만든 레이블인지가 결과를 좌우하므로
+CSV 에 들어 있던 값에 의존하지 않고 방향(``--direction``)을 명시한다. 기준가가 없는
+데이터는 외부에서 승인받은 레이블을 받은 경우로 보고 CSV 값을 그대로 쓴다
+(보고서의 ``label_direction`` 이 ``csv`` 가 된다).
+
+출력에는 **학습이 전혀 없는 규칙 기준선**을 함께 적는다: "직거래면 이상". 모델이
+이걸 못 넘기면 모델을 쓸 이유가 없다. 회귀의 '자치구+평형 중앙값' 기준선과 같은
+역할이다.
+"""
 
 from __future__ import annotations
 
@@ -16,9 +27,11 @@ from apartment_ml.data.preprocess import (
     add_price_features,
     coerce_types,
     ensure_optional_columns,
+    label_anomalies,
     load_transactions,
     validate_values,
 )
+from apartment_ml.evaluation.metrics import classification_metrics
 from apartment_ml.evaluation.split import time_based_split
 from apartment_ml.models.base import LabelsNotAvailableError, TrainingDisabledError
 from apartment_ml.models.classification import AnomalyClassificationModel, validate_anomaly_labels
@@ -39,7 +52,20 @@ API_NUMERIC_FEATURES = (
 )
 
 
-def train_anomaly(data_path: Path, label_source: str, settings: Settings) -> dict:
+def direct_deal_baseline(part: pd.DataFrame) -> dict:
+    """학습 없는 규칙 기준선: 직거래면 이상으로 본다.
+
+    레이블(기준가 대비 싼 거래)에는 직거래가 몰려 있다. 모델이 이 한 줄 규칙을
+    못 넘기면, 학습한 것이 '직거래 여부' 말고 무엇인지 설명할 수 있어야 한다.
+    """
+    target = part[S.CLASSIFICATION_TARGET].astype(int).to_numpy()
+    direct = pd.to_numeric(part[S.IS_DIRECT_DEAL], errors="coerce").fillna(0)
+    return classification_metrics(target, (direct == 1).astype(int).to_numpy())
+
+
+def train_anomaly(
+    data_path: Path, label_source: str, settings: Settings, direction: str = "below"
+) -> dict:
     """공통 시간순 분할에서 모델 네 개를 비교하고 최종 모델과 지표를 저장한다."""
     data = load_transactions(data_path)
     if data_path.stem.upper().endswith("_TEST_ONLY") or (
@@ -47,6 +73,13 @@ def train_anomaly(data_path: Path, label_source: str, settings: Settings) -> dic
     ):
         raise LabelsNotAvailableError("TEST_ONLY 합성 데이터는 이상거래 학습에 사용할 수 없습니다.")
     target = S.CLASSIFICATION_TARGET
+    # 기준가가 있으면 여기서 기준을 정해 레이블을 다시 만든다. 어떤 기준으로 만든
+    # 레이블인지가 결과를 좌우하므로 CSV 에 들어 있던 값에 의존하지 않는다.
+    # 기준가가 없으면 외부에서 승인받은 레이블을 받은 경우이므로 그대로 쓴다.
+    if {S.PRICE_RATIO, S.PEER_TIER} <= set(data.columns):
+        data = label_anomalies(data, direction=direction)
+    else:
+        direction = "csv"
     if target not in data or data[target].isna().all():
         raise LabelsNotAvailableError("anomaly_label 컬럼이 없거나 전부 결측입니다.")
     if not settings.classification_training_enabled:
@@ -93,6 +126,7 @@ def train_anomaly(data_path: Path, label_source: str, settings: Settings) -> dic
 
     model = models[selected]
     model.metadata["label_source"] = label_source.strip()
+    model.metadata["label_direction"] = direction
     model_path = settings.anomaly_model_path
     report_path = model_path.with_name(f"{model_path.stem}_metrics.json")
     if data_path.resolve() in {model_path.resolve(), report_path.resolve()}:
@@ -100,6 +134,9 @@ def train_anomaly(data_path: Path, label_source: str, settings: Settings) -> dic
     report = {
         "data_path": str(data_path),
         "label_source": label_source.strip(),
+        "label_direction": direction,
+        # 학습 없는 규칙. 모델이 이걸 못 넘기면 모델을 쓸 이유가 없다.
+        "baseline_direct_deal": direct_deal_baseline(labelled["test"]),
         "splits": {
             name: {
                 "start": part[S.CONTRACT_DATE].min().date().isoformat(),
@@ -144,9 +181,15 @@ def main() -> None:
         "--data", type=Path, default=settings.path("processed_dir") / "training_dataset.csv"
     )
     parser.add_argument("--label-source", required=True, help="팀이 승인한 레이블 출처와 판정 기준")
+    parser.add_argument(
+        "--direction",
+        choices=("below", "both"),
+        default="below",
+        help="below: 기준가보다 싼 거래만 이상 (기본). both: 양쪽 모두",
+    )
     args = parser.parse_args()
     try:
-        report = train_anomaly(args.data, args.label_source, settings)
+        report = train_anomaly(args.data, args.label_source, settings, args.direction)
     except (OSError, ValueError, LabelsNotAvailableError, TrainingDisabledError) as exc:
         parser.exit(1, f"이상거래 학습 실패. {exc}\n")
     print(json.dumps(report, ensure_ascii=False, indent=2))

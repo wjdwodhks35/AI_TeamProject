@@ -165,6 +165,12 @@ def test_label_custom_thresholds():
     assert label_anomalies(df, thresholds={1: 0.20})[S.ANOMALY_LABEL].tolist() == [0]
 
 
+def test_label_handles_string_columns():
+    """CSV 에서 다시 읽으면 두 컬럼이 문자열로 돌아온다. 그래도 같은 결과가 나와야 한다."""
+    df = pd.DataFrame({S.PEER_TIER: ["1", "1", "2"], S.PRICE_RATIO: ["0.75", "0.90", "0.65"]})
+    assert label_anomalies(df)[S.ANOMALY_LABEL].tolist() == [1, 0, 1]
+
+
 def test_label_requires_peer_price():
     with pytest.raises(SchemaValidationError, match="add_peer_price"):
         label_anomalies(pd.DataFrame({"price_krw": [1]}))

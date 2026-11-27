@@ -4,7 +4,9 @@ from apartment_ml.pipeline import run_smoke_pipeline
 
 def test_settings_load():
     s = load_settings()
-    assert s.classification_training_enabled is False
+    # 2026-11-27 레이블 기준 확정으로 켰다 (docs/MODEL_PLAN.md §2).
+    # 기준을 바꾸지 않은 채 이 값이 흔들리면 학습 결과의 근거가 사라진다.
+    assert s.classification_training_enabled is True
     assert abs(s.split.train_ratio + s.split.valid_ratio + s.split.test_ratio - 1) < 1e-9
 
 

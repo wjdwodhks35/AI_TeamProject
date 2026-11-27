@@ -166,25 +166,71 @@ valid 구간(최근 7개월)을 버리면 그 사이 거래된 단지를 못 본
 | 앙상블 | `VotingClassifier` (soft voting) — `ensemble.build_voting_model()` |
 | 지표 | Precision, Recall, F1, Confusion Matrix (`classification_metrics`) |
 
-### 레이블 미확보 문제 (블로커)
-- 현재 `AnomalyClassificationModel.fit()`은 `training_enabled=True`를 넘기지 않으면 `TrainingDisabledError`를 냅니다. 레이블이 전부 결측이거나 한 클래스뿐이면 `LabelsNotAvailableError`를 냅니다.
-- **임의로 레이블을 만들지 않습니다.** 정상/이상 기준이 정해지기 전까지 분류 성능 수치는 존재하지 않습니다.
-- 레이블 확보 방안 후보 (팀 합의 필요)
-  1. 공식 자료에서 확인된 사례: 해제(취소)된 거래, 국토부·지자체 조사로 적발된 사례가 공개된 경우
-  2. 규칙 기반 레이블: 예) 같은 단지·면적·기간의 시세에서 크게 벗어난 거래. 이 경우 모델이 결국 *규칙을 재현*하게 된다는 한계를 문서화해야 합니다.
-  3. 비지도 이상탐지(IsolationForest 등)로 방향을 바꾸는 방안. 범위가 바뀌므로 지도교수 및 팀과 협의가 필요합니다.
+### 확정된 레이블 기준 (2026-11-27)
+
+규칙 기반 레이블을 씁니다. `label_anomalies(direction="below")` — 같은 자치구·평형대
+기준가보다 **1단계 20%, 2단계 30% 이상 싼** 거래를 1 로 둡니다. 3·4단계는 기준가가
+거칠어서 레이블을 달지 않습니다 (미판정).
+
+**비싼 쪽은 뺐습니다.** 레이블을 만들 때 쓰지 않은 직거래 비율로 보면 (전체 2.74%):
+
+| 후보 | 건수 | 직거래 비율 |
+|---|---|---|
+| 1단계 싸게 | 1,172 | 67.03% (24배) |
+| 2단계 싸게 | 1,527 | 23.42% (8.5배) |
+| 1단계 비싸게 | 2,121 | 3.88% (1.4배) |
+| 2단계 비싸게 | 2,759 | 1.36% (**평균보다 낮음**) |
+
+싼 쪽에는 직거래가 몰려 있는데 비싼 쪽은 그렇지 않습니다. 양쪽을 한 레이블로 묶으면
+성격이 다른 두 집단이 섞입니다. 실제로 묶어서 학습하면 성능이 떨어집니다
+(test F1 `both` 0.043 vs `below` 0.172).
+
+레이블 기준은 학습 시점에 `--direction` 으로 정합니다. CSV 에 들어 있던 값을 그대로
+쓰지 않습니다 — 어떤 기준으로 만든 레이블인지가 결과를 좌우하기 때문입니다.
+
+### 모델이 규칙 기준선을 넘지 못합니다
+
+학습이 전혀 없는 한 줄 규칙 **"직거래면 이상"** 과 비교하면 (test 구간, 문턱값 0.5):
+
+| | Precision | Recall | F1 |
+|---|---|---|---|
+| **기준선: 직거래면 이상** | 0.363 | 0.378 | **0.371** |
+| decision_tree | 0.107 | 0.209 | 0.142 |
+| random_forest | 0.587 | 0.055 | 0.100 |
+| hist_gradient_boosting (선택) | 0.265 | 0.153 | 0.194 |
+| voting | 0.350 | 0.144 | 0.204 |
+
+네 모델 모두 기준선의 절반 수준입니다. **이유는 레이블 정의에 있습니다.** 레이블은
+`가격 < 기준가 × 0.8` 인데, 분류 입력 44개에 **기준가가 없습니다.** 기준가를 주면
+모델이 레이블 공식을 그대로 되계산하게 되므로 일부러 뺀 것입니다. 그래서 모델은 규칙을
+복원하지 못하고 상관있는 흔적만 줍습니다 — 모델이 1 로 뽑은 거래의 98~100%가
+직거래입니다. 직거래 변수를 빼면 F1 이 0.086 으로 더 떨어져, 그 변수가 거의 전부입니다.
+
+문턱값을 낮춰도 달라지지 않습니다. valid 에서 F1 이 가장 높은 0.40 을 써도 test F1 은
+0.194 로 0.50 과 같습니다. 그래서 0.5 를 유지합니다.
+
+**이것은 결함이 아니라 결과입니다.** 가격 편차로 레이블을 만들면서 가격 기준을
+입력에서 빼면, 지도학습이 할 수 있는 일이 남지 않습니다. 다음 중 하나를 골라야 합니다.
+
+1. 가격에서 파생되지 않는 레이블로 바꾸기 — 해제(취소) 여부, 단기 재매매 등
+2. 비지도 이상탐지로 범위 변경 (IsolationForest 등) — 지도교수·팀 협의 필요
+3. 현 상태를 유지하고 **기준선 비교를 결과로 보고** — 규칙 하나가 모델을 이긴다는
+   사실 자체가 관찰이며, 회귀에서 기준선을 넘긴 것과 대비됩니다
+
+현재는 3번 상태입니다. `scripts/train_anomaly.py` 가 매번 기준선을 함께 출력하고
+`anomaly_model_metrics.json` 의 `baseline_direct_deal` 에 기록합니다.
 ### 학습 및 백엔드 연동
 
-1. 데이터 담당자와 레이블 출처 및 판정 기준을 확정한 뒤, 실제 거래가 담긴 전처리 CSV의 `anomaly_label`에 승인된 값을 제공받습니다. `0`은 정상, `1`은 이상거래 의심, 빈 값은 미판정입니다. 저장소의 `TEST_ONLY` 샘플 122행은 모두 미판정입니다. `scripts/build_dataset.py --label`의 가격 편차 규칙은 팀 검토가 필요한 후보입니다.
-2. `configs/settings.yaml`에서 `classification.training_enabled`를 `true`로 설정하고 저장소 루트에서 실행합니다. `--label-source`에는 실제 레이블 출처와 승인된 기준을 적습니다.
+1. 레이블은 학습 시점에 `--direction` 으로 만듭니다 (기본 `below`). CSV 의 `anomaly_label` 값은 덮어씁니다. `0`은 정상, `1`은 이상거래 의심, 빈 값은 미판정입니다. 저장소의 `TEST_ONLY` 샘플 122행은 학습에 쓸 수 없습니다.
+2. `configs/settings.yaml`의 `classification.training_enabled`는 `true`입니다. 저장소 루트에서 실행합니다. `--label-source`에는 레이블 기준과 확정 날짜를 적습니다.
 
    ```bash
-   python scripts/train_anomaly.py --data data/processed/training_dataset.csv --label-source "<승인된 레이블 출처와 기준>"
+   python scripts/train_anomaly.py --label-source "label_anomalies(direction=below): 기준가 대비 1단계 20%, 2단계 30% 이상 싼 거래. 2026-11-27 확정."
    ```
 
 3. 전체 거래를 계약일 기준으로 분할한 뒤 구간별로 레이블이 있는 행을 사용합니다. 각 구간에서 정상과 의심 거래가 모두 필요합니다. 결측 대체 및 인코딩은 학습 구간에서만 적합합니다.
 4. 개별 모델 3종과 동일 가중치 soft voting에 공통 임계값 0.5를 사용합니다. 검증 F1이 가장 높은 모델을 선택합니다. 동률이면 Recall, Precision, 모델 선언 순서로 결정합니다. 선택 후 테스트 구간에서 네 모델의 Precision, Recall, F1 및 혼동행렬을 계산합니다. 행렬의 행은 실제값, 열은 예측값이며 순서는 `[0, 1]`입니다.
-5. 기본 출력은 `models/anomaly_model.joblib`와 `models/anomaly_model_metrics.json`입니다. joblib에는 선택된 모델과 전처리기가 들어갑니다. JSON에는 모델별 검증·테스트 지표, 구간별 계약일 범위, 클래스별 건수 및 미판정 건수, 레이블 출처가 들어갑니다.
+5. 기본 출력은 `models/anomaly_model.joblib`와 `models/anomaly_model_metrics.json`입니다. JSON 에는 `label_direction` 과 규칙 기준선(`baseline_direct_deal`)도 함께 들어갑니다. joblib에는 선택된 모델과 전처리기가 들어갑니다. JSON에는 모델별 검증·테스트 지표, 구간별 계약일 범위, 클래스별 건수 및 미판정 건수, 레이블 출처가 들어갑니다.
 
 API 서버는 시작할 때 설정된 모델 파일을 불러옵니다. [API 계약](API_CONTRACT.md)의 `POST /predict/anomaly`에 거래 조건과 원 단위 실제 거래가격 `price_krw`를 보내면 `is_suspicious`, `suspicion_score`, `threshold`, `model_name`을 반환합니다. 파이썬에서는 `AnomalyClassificationModel.load(path)`로 모델을 불러오고, 해당 모델의 `feature_columns`를 포함한 DataFrame에 `predict` 또는 `predict_proba`를 호출할 수 있습니다. 학습 입력은 API 요청에서 제공하거나 파생할 수 있는 변수로 구성합니다.
 
