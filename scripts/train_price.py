@@ -16,6 +16,16 @@
 
 기준선을 함께 출력한다: '자치구 + 평형대(10㎡ 단위) 중앙값' 조회. 학습이 전혀
 없는 방식이므로, 모델이 이걸 못 넘기면 모델을 쓸 이유가 없다.
+
+모델 비교 표는 전부 **train 만으로** 학습한 값이다(공정한 비교). 저장하는 배포본은
+여기서 두 단계를 더 거친다.
+
+1. 최고 모델의 로그 복원 편향 보정계수를 **valid** 에서 구한다.
+2. **train+valid** 로 다시 학습하고 1의 계수를 그대로 적용해 저장한다.
+
+valid 구간(최근 7개월)을 버리면 그 사이 거래된 단지를 못 본 상태로 예측하게 된다.
+측정 결과 test MAE 1.34억 -> 1.12억, 편향 -0.41억 -> -0.02억 차이가 났다. 보정계수는
+valid 를 학습에 넣기 전 모델에서 구하므로 test 정보는 쓰지 않는다.
 """
 
 from __future__ import annotations
@@ -83,9 +93,11 @@ def print_header() -> None:
     print("-" * 78)
 
 
-def print_row(label: str, m: dict[str, float]) -> None:
+def print_row(label: str, m: dict[str, float], *, valid_in_train: bool = False) -> None:
+    # valid 를 학습에 넣은 모델의 valid MAE 는 자기 학습 데이터 점수라 의미가 없다.
+    valid = "         -" if valid_in_train else f"{m['valid_mae'] / 1e8:10.2f}억"
     print(
-        f"{label:30}{m['valid_mae'] / 1e8:10.2f}억{m['test_mae'] / 1e8:10.2f}억"
+        f"{label:30}{valid}{m['test_mae'] / 1e8:10.2f}억"
         f"{m['test_r2']:8.3f}{m['test_mape']:7.1f}%{m['test_bias'] / 1e8:+9.2f}억",
         flush=True,
     )
@@ -154,9 +166,41 @@ def main() -> None:
     if best is None:
         return
     _, name, model = best
-    monthly_bias(split, model.predict(split.test))
+
+    # (1) 로그 복원 편향 보정계수를 valid 에서 구한다
+    factor = model.calibrate(split.valid)
+    print_row(
+        f"{name} + 편향보정 (x{factor:.4f})",
+        score(split, {p: model.predict(getattr(split, p)) for p in ("valid", "test")}),
+    )
+
+    # (2) valid 까지 넣어 다시 학습한다. 이게 저장되는 배포본이다.
+    deployed = PriceRegressionModel(
+        name,
+        location_features=location,
+        relative_to_market=market is not None,
+        market_index=market,
+        random_state=args.seed,
+    ).fit(pd.concat([split.train, split.valid]))
+    deployed.set_log_bias_factor(factor, source=_date_range(split.valid))
+    pred_test = deployed.predict(split.test)
+    print_row(
+        f"{name} + 보정 + train+valid 학습",
+        score(split, {"valid": model.predict(split.valid), "test": pred_test}),
+        valid_in_train=True,
+    )
+
+    monthly_bias(split, pred_test)
     args.out.parent.mkdir(parents=True, exist_ok=True)
-    print(f"\n최고 모델: {name} (valid MAE 기준) -> {model.save(args.out)}")
+    print(
+        f"\n저장: {name}, train+valid {deployed.metadata['n_train']:,}건 학습, "
+        f"보정계수 {factor:.4f} -> {deployed.save(args.out)}"
+    )
+
+
+def _date_range(part: pd.DataFrame) -> list[str]:
+    dates = part[S.CONTRACT_DATE]
+    return [dates.min().date().isoformat(), dates.max().date().isoformat()]
 
 
 if __name__ == "__main__":

@@ -49,6 +49,24 @@ def test_regression_fit_predict_save_load(train_df, tmp_path, name):
     np.testing.assert_allclose(loaded.predict(train_df), pred)
 
 
+def test_regression_bias_correction(train_df):
+    """보정계수는 예측에 곱해지고, 다시 학습하면 무효가 된다."""
+    model = PriceRegressionModel("gradient_boosting").fit(train_df)
+    raw = model.predict(train_df)
+    assert model.log_bias_factor_ == 1.0
+
+    factor = model.calibrate(train_df)
+    assert factor > 1.0  # 로그 복원은 항상 낮게 나오므로 보정은 1보다 크다
+    np.testing.assert_allclose(model.predict(train_df), raw * factor)
+    assert model.metadata["log_bias_factor"] == factor
+
+    model.fit(train_df)
+    assert model.log_bias_factor_ == 1.0
+
+    with pytest.raises(ValueError, match="보정계수"):
+        model.set_log_bias_factor(0.0)
+
+
 def test_regression_load_missing_file(tmp_path):
     with pytest.raises(ModelNotReadyError):
         PriceRegressionModel.load(tmp_path / "nope.joblib")

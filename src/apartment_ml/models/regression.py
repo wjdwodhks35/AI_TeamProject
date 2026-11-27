@@ -35,7 +35,7 @@ from apartment_ml.models.market_index import MarketIndex
 # 실제로 상대가격으로 학습한 파일을 절대가격 코드로 읽어 1원이 나온 적이 있다.
 # 오류 없이 틀리는 것이 가장 위험하므로, 예측 경로가 바뀌면 이 숫자를 올리고
 # 불일치하는 파일은 불러오기를 거부한다.
-PREDICTION_CONTRACT = 2
+PREDICTION_CONTRACT = 3
 
 REGRESSOR_FACTORIES: dict[str, Callable[[int], RegressorMixin]] = {
     "linear_regression": lambda seed: LinearRegression(),
@@ -48,8 +48,16 @@ REGRESSOR_FACTORIES: dict[str, Callable[[int], RegressorMixin]] = {
     # 측정 결과 이 데이터에서 가장 잘 맞는 모델. 잔차를 순차로 줄이기 때문에
     # 자치구 x 면적 x 층 같은 깊은 상호작용을 잡는다 (랜덤포레스트는 독립 트리의
     # 평균이라 그게 뭉개진다).
+    # max_leaf_nodes 는 시간순 교차검증(train+valid 를 6개월 단위 4구간으로 나눔)으로
+    # 골랐다. 폴드 평균 MAE: 31잎 1.196억 / 63잎 1.152억 / 127잎 1.129억 / 255잎 1.108억.
+    # valid 한 구간만 보면 복잡한 모델을 과대평가하므로(valid 는 계속 좋아지는데 test 는
+    # 나빠졌다) 여러 구간의 평균으로 고른다.
     "gradient_boosting": lambda seed: HistGradientBoostingRegressor(
-        max_iter=400, learning_rate=0.1, random_state=seed, early_stopping=False
+        max_iter=800,
+        learning_rate=0.05,
+        max_leaf_nodes=255,
+        random_state=seed,
+        early_stopping=False,
     ),
 }
 
@@ -98,6 +106,8 @@ class PriceRegressionModel:
         )
         self.random_state = random_state
         self.pipeline: Pipeline | None = None
+        # 로그 복원 편향 보정계수. calibrate() 로 정하기 전까지는 1.0(보정 없음).
+        self.log_bias_factor_: float = 1.0
         self.metadata: dict[str, Any] = {}
 
     # -- 계약 ---------------------------------------------------------------
@@ -165,13 +175,21 @@ class PriceRegressionModel:
             raise ValueError("상대가격 학습에는 모든 행의 전용면적이 필요합니다.")
         return np.log(price / area) - self.market_.transform(df)
 
-    def _to_price(self, df: pd.DataFrame, pred: np.ndarray) -> np.ndarray:
+    def _to_price(self, df: pd.DataFrame, pred: np.ndarray, *, correct: bool = True) -> np.ndarray:
+        """모델 출력 → 가격(원).
+
+        로그를 씌워 학습하고 ``exp`` 로 되돌리면 평균이 아니라 **중앙값**이 복원된다.
+        로그를 씌우는 순간 분포가 눌리고, 되돌릴 때 위쪽 꼬리가 되살아나지 않아
+        예측이 체계적으로 낮아진다. 잔차 분산의 절반을 지수로 올린 보정계수
+        ``exp(sigma^2 / 2)`` 를 곱하면 그만큼이 복원된다 (``calibrate`` 참고).
+        """
         if not self.log_target:
             return pred
+        factor = self.log_bias_factor_ if correct else 1.0
         if self.market_ is None:
-            return np.exp(pred)
+            return np.exp(pred) * factor
         area = pd.to_numeric(df[S.AREA_M2], errors="coerce").to_numpy("float64")
-        return np.exp(pred + self.market_.transform(df)) * area
+        return np.exp(pred + self.market_.transform(df)) * area * factor
 
     def fit(
         self, train: pd.DataFrame, y: pd.Series | np.ndarray | None = None
@@ -193,6 +211,7 @@ class PriceRegressionModel:
         pipeline = Pipeline([("preprocess", self._build_preprocessor()), ("model", self.estimator)])
         pipeline.fit(X, target)
         self.pipeline = pipeline
+        self.log_bias_factor_ = 1.0  # 다시 학습했으면 이전 보정은 무효
         ranges = {
             c: (float(X[c].min()), float(X[c].max()))
             for c in self.numeric_features
@@ -206,16 +225,56 @@ class PriceRegressionModel:
             "location_features": self.location_features,
             "log_target": self.log_target,
             "relative_to_market": self.market_ is not None,
+            "log_bias_factor": self.log_bias_factor_,
             "feature_ranges": ranges,
             "train_date_range": _date_range(train),
         }
         return self
 
-    def predict(self, X: pd.DataFrame) -> np.ndarray:
+    def calibrate(self, holdout: pd.DataFrame, y: pd.Series | np.ndarray | None = None) -> float:
+        """로그 복원 편향 보정계수를 **학습에 쓰지 않은** 구간에서 정한다.
+
+        학습 데이터의 잔차는 과적합 때문에 실제보다 작아서 보정이 모자라고,
+        평가 구간(test)에서 구하면 평가 대상을 보고 맞추는 것이라 반칙이다.
+        그래서 별도 검증 구간(valid)을 넘겨 받는다.
+        """
+        if self.pipeline is None:
+            raise ModelNotReadyError(f"회귀 모델 '{self.name}' 이 학습되지 않았습니다.")
+        if not self.log_target:
+            self.log_bias_factor_ = 1.0
+            return 1.0
+        price = np.asarray(holdout[S.REGRESSION_TARGET] if y is None else y, dtype="float64")
+        pred = self._predict(holdout, correct=False)
+        ok = (price > 0) & (pred > 0)
+        if ok.sum() < 2:
+            raise ValueError("보정계수를 구할 수 있는 행이 2개 미만입니다.")
+        variance = float(np.var(np.log(price[ok]) - np.log(pred[ok])))
+        self.log_bias_factor_ = float(np.exp(variance / 2))
+        self.metadata["log_bias_factor"] = self.log_bias_factor_
+        self.metadata["log_bias_calibrated_on"] = _date_range(holdout)
+        return self.log_bias_factor_
+
+    def set_log_bias_factor(self, factor: float, *, source: object = None) -> None:
+        """다른 구간에서 구한 보정계수를 그대로 적용한다.
+
+        배포본은 valid 까지 넣어 다시 학습하므로 자기 자신에게는 보정계수를 구할
+        구간이 남지 않는다. valid 를 넣기 전 모델에서 구한 값을 가져와 쓴다.
+        """
+        if not np.isfinite(factor) or factor <= 0:
+            raise ValueError(f"보정계수는 0보다 큰 유한한 수여야 합니다: {factor!r}")
+        self.log_bias_factor_ = float(factor)
+        self.metadata["log_bias_factor"] = float(factor)
+        if source is not None:
+            self.metadata["log_bias_calibrated_on"] = source
+
+    def _predict(self, X: pd.DataFrame, *, correct: bool = True) -> np.ndarray:
         if self.pipeline is None:
             raise ModelNotReadyError(f"회귀 모델 '{self.name}' 이 학습되지 않았습니다.")
         pred = self.pipeline.predict(to_model_frame(X, self.feature_columns))
-        return self._to_price(X, pred)
+        return self._to_price(X, pred, correct=correct)
+
+    def predict(self, X: pd.DataFrame) -> np.ndarray:
+        return self._predict(X)
 
     def evaluate(
         self, data: pd.DataFrame, y: pd.Series | np.ndarray | None = None
