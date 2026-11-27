@@ -18,6 +18,7 @@ def frame() -> pd.DataFrame:
             # 같은 단지가 두 번 거래됐고, 한 번은 동이 잘못 들어온 경우를 섞는다
             "complex_id": ["11680-1", "11680-1", "11680-2", "11440-1"],
             "apartment_name": ["은마", "은마", "래미안", "메세나폴리스"],
+            "built_year": [1979, 1979, 2015, 2012],
         }
     )
 
@@ -30,6 +31,8 @@ def test_build_groups_by_district_and_complex():
     gangnam = directory.complexes("강남구")
     assert [e.apartment_name for e in gangnam] == ["은마", "래미안"]  # 동 → 단지명 순
     assert gangnam[0].n_deals == 2
+    # 준공연도는 단지마다 고정이라 화면에서 자동으로 채운다
+    assert gangnam[0].built_year == 1979
     assert directory.dongs("강남구") == ["대치동", "역삼동"]
     assert directory.has("강남구", "11680-1")
     assert not directory.has("마포구", "11680-1")  # 자치구가 다르면 없는 것으로 본다

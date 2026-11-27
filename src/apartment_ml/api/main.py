@@ -16,6 +16,7 @@ import math
 import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from datetime import date
 from uuid import uuid4
 
 import pandas as pd
@@ -41,9 +42,11 @@ from apartment_ml.api.schemas import (
     LocationsResponse,
     PricePredictionRequest,
     PricePredictionResponse,
+    RegulationStateResponse,
 )
 from apartment_ml.config import get_cors_origins, get_settings
 from apartment_ml.data.preprocess import add_price_features
+from apartment_ml.data.regulation_lookup import RegulationLookup, RegulationLookupError
 from apartment_ml.models.anomaly_rules import RuleLevel, rule_verdict
 from apartment_ml.models.base import AnomalyDetector, ModelNotReadyError, PricePredictor
 from apartment_ml.models.complex_directory import ComplexDirectory, ComplexDirectoryError
@@ -114,6 +117,46 @@ def _build_forecaster(price_model: object) -> MarketIndexForecaster | None:
         return None
 
 
+def _load_regulation_lookup() -> RegulationLookup | None:
+    """고시 이력을 읽어 둔다. 없으면 규제 자동 입력만 빠지고 나머지는 그대로 동작한다."""
+    try:
+        return RegulationLookup.load()
+    except RegulationLookupError as exc:
+        logger.warning("규제 이력 로드 실패: %s", exc)
+        return None
+
+
+def _apply_regulation(features: S.ApartmentFeatures, request: Request) -> S.ApartmentFeatures:
+    """비어 있는 규제 항목을 고시 이력에서 채운다.
+
+    투기과열지구 같은 값은 고시로 정해진 사실이라 사용자가 알아맞힐 값이 아니다.
+    요청에 명시된 값이 있으면 그대로 둔다 (가정을 바꿔 보고 싶을 수 있다).
+    """
+    lookup: RegulationLookup | None = request.app.state.regulation_lookup
+    if lookup is None:
+        return features
+    known = lookup.at(features.district, features.contract_date)
+    current = features.regulation
+    filled = S.RegulationInfo(
+        speculation_overheated=(
+            current.speculation_overheated
+            if current and current.speculation_overheated is not None
+            else bool(known[S.REG_SPECULATION_OVERHEATED])
+        ),
+        adjustment_target=(
+            current.adjustment_target
+            if current and current.adjustment_target is not None
+            else bool(known[S.REG_ADJUSTMENT_TARGET])
+        ),
+        land_permit=(
+            current.land_permit
+            if current and current.land_permit is not None
+            else bool(known[S.REG_LAND_PERMIT])
+        ),
+    )
+    return features.model_copy(update={"regulation": filled})
+
+
 def _load_complex_directory() -> ComplexDirectory | None:
     """단지 목록을 읽는다. 없으면 /locations 만 503 이 되고 예측은 그대로 동작한다."""
     try:
@@ -159,6 +202,7 @@ def create_app(
                 app.state.anomaly_model = loaded_anomaly
             if complex_directory is None:
                 app.state.complex_directory = _load_complex_directory()
+        app.state.regulation_lookup = _load_regulation_lookup()
         app.state.forecaster = (
             _build_forecaster(app.state.price_model) if app.state.price_model else None
         )
@@ -174,6 +218,7 @@ def create_app(
     app.state.anomaly_model = anomaly_model
     app.state.complex_directory = complex_directory
     app.state.forecaster = None
+    app.state.regulation_lookup = None
     app.add_middleware(
         CORSMiddleware,
         allow_origins=get_cors_origins(),
@@ -283,6 +328,38 @@ def create_app(
         )
 
     @app.get(
+        "/regulation/{district}",
+        response_model=RegulationStateResponse,
+        responses={404: {"model": ErrorResponse, "description": "서울 25개 자치구가 아님"}},
+        tags=["reference"],
+    )
+    def regulation_state(
+        district: str, request: Request, on: date | None = None
+    ) -> RegulationStateResponse:
+        """그 날 그 자치구에 걸려 있던 규제. 입력칸 대신 이걸 보여주면 된다."""
+        lookup: RegulationLookup | None = request.app.state.regulation_lookup
+        if lookup is None:
+            raise _not_ready("규제 이력을 읽을 수 없습니다 (configs/regulation_events.csv).")
+        name = district.strip()
+        if name not in S.SEOUL_DISTRICTS:
+            raise HTTPException(
+                status_code=404,
+                detail={
+                    "code": "DISTRICT_NOT_FOUND",
+                    "message": f"서울 25개 자치구 중 하나여야 합니다: {name!r}",
+                },
+            )
+        when = on or date.today()
+        flags = lookup.at(name, when)
+        return RegulationStateResponse(
+            district=name,
+            on=when.isoformat(),
+            speculation_overheated=bool(flags[S.REG_SPECULATION_OVERHEATED]),
+            adjustment_target=bool(flags[S.REG_ADJUSTMENT_TARGET]),
+            land_permit=bool(flags[S.REG_LAND_PERMIT]),
+        )
+
+    @app.get(
         "/locations/{district}",
         response_model=LocationsResponse,
         responses={
@@ -325,7 +402,7 @@ def create_app(
     )
     def predict_price(body: PricePredictionRequest, request: Request) -> PricePredictionResponse:
         model = _price_model(request)
-        frame = build_feature_frame(body)
+        frame = build_feature_frame(_apply_regulation(body, request))
         predictions = model.predict(frame)
         if getattr(predictions, "shape", None) != (1,):
             raise RuntimeError("Price predictions must have shape (1,)")
@@ -359,8 +436,10 @@ def create_app(
         if forecaster is None:
             raise _not_ready("시세 예측기가 준비되지 않았습니다 (가격 모델을 다시 학습하세요).")
 
-        features = body.model_dump(exclude={"months"})
-        frame = build_feature_frame(S.ApartmentFeatures(**features))
+        features = _apply_regulation(
+            S.ApartmentFeatures(**body.model_dump(exclude={"months"})), request
+        )
+        frame = build_feature_frame(features)
         try:
             points = forecast_prices(model, frame, forecaster, months=body.months)
         except (ForecastError, ValueError) as exc:
@@ -405,7 +484,9 @@ def create_app(
             raise _not_ready(
                 "이상거래 분류 모델이 준비되지 않았습니다 (이상거래 정답 레이블 미확보)."
             )
-        features = S.ApartmentFeatures.model_validate(body.model_dump(exclude={"price_krw"}))
+        features = _apply_regulation(
+            S.ApartmentFeatures.model_validate(body.model_dump(exclude={"price_krw"})), request
+        )
         frame = build_feature_frame(features)
         frame[S.PRICE_KRW] = pd.array([body.price_krw], dtype="Int64")
         frame = add_price_features(frame)
@@ -463,7 +544,10 @@ def create_app(
         model = _price_model(request)
         try:
             result = compare_interest_rate_scenario(
-                model, body.features, body.base_rate_before, body.base_rate_after
+                model,
+                _apply_regulation(body.features, request),
+                body.base_rate_before,
+                body.base_rate_after,
             )
         except ScenarioNotSupportedError as exc:
             raise HTTPException(

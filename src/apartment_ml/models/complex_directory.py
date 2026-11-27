@@ -32,7 +32,7 @@ import pandas as pd
 
 from apartment_ml import schemas as S
 
-DIRECTORY_FORMAT = 1
+DIRECTORY_FORMAT = 2  # 2: built_year 추가
 
 
 class ComplexDirectoryError(RuntimeError):
@@ -41,12 +41,18 @@ class ComplexDirectoryError(RuntimeError):
 
 @dataclass(frozen=True)
 class ComplexEntry:
-    """단지 하나. `n_deals` 는 학습 데이터에서의 거래 수(목록 정렬·신뢰도 판단용)."""
+    """단지 하나.
+
+    `n_deals` 는 학습 데이터에서의 거래 수(목록 정렬·신뢰도 판단용).
+    `built_year` 는 단지마다 고정된 값이라 사용자가 입력할 이유가 없다. 화면에서
+    단지를 고르면 바로 채워 넣는다.
+    """
 
     complex_id: str
     apartment_name: str
     dong: str
     n_deals: int
+    built_year: int | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -54,6 +60,7 @@ class ComplexEntry:
             "apartment_name": self.apartment_name,
             "dong": self.dong,
             "n_deals": self.n_deals,
+            "built_year": self.built_year,
         }
 
 
@@ -73,6 +80,13 @@ class ComplexDirectory:
             raise ComplexDirectoryError(f"단지 목록에 필요한 컬럼이 없습니다: {missing}")
 
         work = df.loc[:, list(needed)].astype("string").dropna()
+        # 준공연도는 있으면 쓰고 없으면 비워 둔다 (옛 데이터에는 없을 수 있다).
+        built = (
+            pd.to_numeric(df.get(S.BUILT_YEAR), errors="coerce").reindex(work.index)
+            if S.BUILT_YEAR in df.columns
+            else pd.Series(pd.NA, index=work.index, dtype="Float64")
+        )
+        work = work.assign(_built=built)
         if work.empty:
             raise ComplexDirectoryError("단지 목록을 만들 수 있는 행이 없습니다.")
 
@@ -82,6 +96,7 @@ class ComplexDirectory:
                 apartment_name=(S.APARTMENT_NAME, lambda s: s.mode().iat[0]),
                 dong=(S.DONG, lambda s: s.mode().iat[0]),
                 n_deals=(S.COMPLEX_ID, "size"),
+                built_year=("_built", lambda s: s.mode().iat[0] if not s.mode().empty else pd.NA),
             )
             .sort_values(["dong", "apartment_name"], kind="stable")
         )
@@ -94,6 +109,7 @@ class ComplexDirectory:
                     apartment_name=str(r.apartment_name),
                     dong=str(r.dong),
                     n_deals=int(r.n_deals),
+                    built_year=None if pd.isna(r.built_year) else int(r.built_year),
                 )
                 for r in rows.itertuples(index=False)
             ]
@@ -163,6 +179,7 @@ def _entry(row: dict[str, Any]) -> ComplexEntry:
             apartment_name=str(row["apartment_name"]),
             dong=str(row["dong"]),
             n_deals=int(row["n_deals"]),
+            built_year=None if row.get("built_year") is None else int(row["built_year"]),
         )
     except (KeyError, TypeError, ValueError) as exc:
         raise ComplexDirectoryError(f"단지 항목이 올바르지 않습니다: {row!r}") from exc

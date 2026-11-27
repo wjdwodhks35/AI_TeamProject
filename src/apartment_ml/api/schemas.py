@@ -55,6 +55,9 @@ class ComplexItem(BaseModel):
     apartment_name: str = Field(..., examples=["은마"])
     dong: str = Field(..., examples=["대치동"])
     n_deals: int = Field(..., description="학습 데이터에서의 거래 수 (많을수록 추정이 안정적)")
+    built_year: int | None = Field(
+        None, description="준공연도. 단지마다 고정이라 화면에서 자동으로 채우면 됩니다"
+    )
 
 
 class LocationsResponse(BaseModel):
@@ -63,6 +66,20 @@ class LocationsResponse(BaseModel):
     district: str
     dongs: list[str] = Field(..., description="법정동 목록 (가나다순)")
     complexes: list[ComplexItem] = Field(..., description="단지 목록 (동 -> 단지명 순)")
+
+
+class RegulationStateResponse(BaseModel):
+    """그 날 그 자치구에 걸려 있던 규제. 고시로 정해진 사실이라 사용자가 입력할 값이 아니다."""
+
+    district: str
+    on: str = Field(..., description="기준일 YYYY-MM-DD")
+    speculation_overheated: bool = Field(..., description="투기과열지구")
+    adjustment_target: bool = Field(..., description="조정대상지역")
+    land_permit: bool = Field(..., description="토지거래허가구역")
+    note: str = Field(
+        "자치구 단위 판정입니다. 동·단지 단위로 지정된 구역은 그 자치구 전체로 적용됩니다.",
+        description="해석 주의",
+    )
 
 
 class PricePredictionResponse(BaseModel):
