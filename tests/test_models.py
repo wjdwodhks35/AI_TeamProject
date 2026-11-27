@@ -31,7 +31,7 @@ def test_regression_forbids_target_as_feature():
         PriceRegressionModel(numeric_features=["area_m2", "price_krw"])
 
 
-@pytest.mark.parametrize("name", ["linear_regression", "random_forest"])
+@pytest.mark.parametrize("name", ["linear_regression", "gradient_boosting"])
 def test_regression_fit_predict_save_load(train_df, tmp_path, name):
     model = PriceRegressionModel(name)
     with pytest.raises(ModelNotReadyError):
@@ -42,11 +42,29 @@ def test_regression_fit_predict_save_load(train_df, tmp_path, name):
     pred = model.predict(train_df)
     assert pred.shape == (len(train_df),)
     metrics = model.evaluate(train_df)
-    assert set(metrics) == {"mae", "rmse", "n"}
+    assert set(metrics) == {"mae", "rmse", "r2", "mape", "n"}
     assert "base_rate" in model.feature_ranges
     path = model.save(tmp_path / "m.joblib")
     loaded = PriceRegressionModel.load(path)
     np.testing.assert_allclose(loaded.predict(train_df), pred)
+
+
+def test_regression_bias_correction(train_df):
+    """보정계수는 예측에 곱해지고, 다시 학습하면 무효가 된다."""
+    model = PriceRegressionModel("gradient_boosting").fit(train_df)
+    raw = model.predict(train_df)
+    assert model.log_bias_factor_ == 1.0
+
+    factor = model.calibrate(train_df)
+    assert factor > 1.0  # 로그 복원은 항상 낮게 나오므로 보정은 1보다 크다
+    np.testing.assert_allclose(model.predict(train_df), raw * factor)
+    assert model.metadata["log_bias_factor"] == factor
+
+    model.fit(train_df)
+    assert model.log_bias_factor_ == 1.0
+
+    with pytest.raises(ValueError, match="보정계수"):
+        model.set_log_bias_factor(0.0)
 
 
 def test_regression_load_missing_file(tmp_path):

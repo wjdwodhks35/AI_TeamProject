@@ -20,6 +20,24 @@ def test_regression_metrics_values():
 def test_regression_perfect():
     m = regression_metrics(np.array([1.0, 2.0]), np.array([1.0, 2.0]))
     assert m["mae"] == 0 and m["rmse"] == 0
+    assert m["r2"] == pytest.approx(1.0) and m["mape"] == 0
+
+
+def test_regression_r2_and_mape():
+    m = regression_metrics([100, 200, 300], [110, 190, 330])
+    # SST = 20000, SSE = 1100
+    assert m["r2"] == pytest.approx(1 - 1100 / 20000)
+    assert m["mape"] == pytest.approx((10 / 100 + 10 / 200 + 30 / 300) / 3 * 100)
+
+
+def test_regression_r2_undefined_when_target_constant():
+    m = regression_metrics([5.0, 5.0], [4.0, 6.0])
+    assert math.isnan(m["r2"])
+
+
+def test_regression_mape_skips_zero_target():
+    m = regression_metrics([0.0, 100.0], [10.0, 110.0])
+    assert m["mape"] == pytest.approx(10.0)
 
 
 @pytest.mark.parametrize(

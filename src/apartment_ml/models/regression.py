@@ -15,23 +15,49 @@ from typing import Any
 import numpy as np
 import pandas as pd
 from sklearn.base import RegressorMixin
-from sklearn.ensemble import RandomForestRegressor
+from sklearn.compose import ColumnTransformer
+from sklearn.ensemble import HistGradientBoostingRegressor, RandomForestRegressor
+from sklearn.impute import SimpleImputer
 from sklearn.linear_model import LinearRegression
 from sklearn.pipeline import Pipeline
+from sklearn.preprocessing import OneHotEncoder, StandardScaler
+from sklearn.tree import DecisionTreeRegressor
 
 from apartment_ml import schemas as S
-from apartment_ml.data.preprocess import (
-    assert_no_forbidden_features,
-    build_feature_preprocessor,
-    to_model_frame,
-)
+from apartment_ml.data.preprocess import assert_no_forbidden_features, to_model_frame
 from apartment_ml.evaluation.metrics import regression_metrics
 from apartment_ml.models.base import ModelNotReadyError, load_artifact, save_artifact, utc_now_iso
+from apartment_ml.models.location_price import LocationPriceEncoder
+from apartment_ml.models.market_index import MarketIndex
+
+# 저장된 모델을 **다른 버전의 코드로** 불러오면, 파이프라인은 그대로 복원되지만
+# 예측값을 가격으로 되돌리는 방식(_to_price)이 달라 조용히 틀린 값이 나온다.
+# 실제로 상대가격으로 학습한 파일을 절대가격 코드로 읽어 1원이 나온 적이 있다.
+# 오류 없이 틀리는 것이 가장 위험하므로, 예측 경로가 바뀌면 이 숫자를 올리고
+# 불일치하는 파일은 불러오기를 거부한다.
+PREDICTION_CONTRACT = 3
 
 REGRESSOR_FACTORIES: dict[str, Callable[[int], RegressorMixin]] = {
     "linear_regression": lambda seed: LinearRegression(),
+    "decision_tree": lambda seed: DecisionTreeRegressor(
+        max_depth=14, min_samples_leaf=5, random_state=seed
+    ),
     "random_forest": lambda seed: RandomForestRegressor(
-        n_estimators=200, random_state=seed, n_jobs=-1
+        n_estimators=200, min_samples_leaf=3, random_state=seed, n_jobs=-1
+    ),
+    # 측정 결과 이 데이터에서 가장 잘 맞는 모델. 잔차를 순차로 줄이기 때문에
+    # 자치구 x 면적 x 층 같은 깊은 상호작용을 잡는다 (랜덤포레스트는 독립 트리의
+    # 평균이라 그게 뭉개진다).
+    # max_leaf_nodes 는 시간순 교차검증(train+valid 를 6개월 단위 4구간으로 나눔)으로
+    # 골랐다. 폴드 평균 MAE: 31잎 1.196억 / 63잎 1.152억 / 127잎 1.129억 / 255잎 1.108억.
+    # valid 한 구간만 보면 복잡한 모델을 과대평가하므로(valid 는 계속 좋아지는데 test 는
+    # 나빠졌다) 여러 구간의 평균으로 고른다.
+    "gradient_boosting": lambda seed: HistGradientBoostingRegressor(
+        max_iter=800,
+        learning_rate=0.05,
+        max_leaf_nodes=255,
+        random_state=seed,
+        early_stopping=False,
     ),
 }
 
@@ -50,27 +76,46 @@ class PriceRegressionModel:
 
     def __init__(
         self,
-        name: str = "linear_regression",
+        name: str = "gradient_boosting",
         estimator: RegressorMixin | None = None,
         numeric_features: Sequence[str] = S.REGRESSION_NUMERIC_FEATURES,
         categorical_features: Sequence[str] = S.REGRESSION_CATEGORICAL_FEATURES,
+        location_features: Sequence[str] = S.REGRESSION_LOCATION_FEATURES,
+        log_target: bool = True,
+        relative_to_market: bool = True,
+        market_index: MarketIndex | None = None,
         random_state: int = 42,
     ) -> None:
-        features = [*numeric_features, *categorical_features]
+        features = [*numeric_features, *categorical_features, *location_features]
         assert_no_forbidden_features(features, S.REGRESSION_FORBIDDEN_FEATURES)
+        if location_features and not log_target:
+            raise ValueError(
+                "위치 인코딩(location_features)은 log_target=True 에서만 쓸 수 있습니다."
+            )
         self.name = name
         self.numeric_features = list(numeric_features)
         self.categorical_features = list(categorical_features)
+        self.location_features = list(location_features)
+        self.log_target = log_target
+        if relative_to_market and not log_target:
+            raise ValueError("상대가격 학습(relative_to_market)은 log_target=True 에서만 됩니다.")
+        self.relative_to_market = relative_to_market or market_index is not None
+        self.market_: MarketIndex | None = market_index
         self.estimator = (
             estimator if estimator is not None else create_regressor(name, random_state)
         )
+        self.random_state = random_state
         self.pipeline: Pipeline | None = None
+        # 로그 복원 편향 보정계수. calibrate() 로 정하기 전까지는 1.0(보정 없음).
+        self.log_bias_factor_: float = 1.0
         self.metadata: dict[str, Any] = {}
 
     # -- 계약 ---------------------------------------------------------------
     @property
     def feature_columns(self) -> list[str]:
-        return [*self.numeric_features, *self.categorical_features]
+        """파이프라인에 넣는 컬럼. 위치 컬럼은 인코더가 숫자로 바꿔 쓰므로 함께 받는다."""
+        extra = [c for c in self.location_features if c not in self.categorical_features]
+        return [*self.numeric_features, *self.categorical_features, *extra]
 
     @property
     def is_fitted(self) -> bool:
@@ -81,28 +126,92 @@ class PriceRegressionModel:
         """학습 데이터의 수치형 변수 [최소, 최대] — 학습 범위 밖 입력 경고에 사용."""
         return dict(self.metadata.get("feature_ranges", {}))
 
+    def _build_preprocessor(self) -> ColumnTransformer:
+        """결측 대체 + 스케일링 + 원-핫 + 위치 타깃 인코딩. 반드시 학습 데이터로만 fit 된다."""
+        steps: list[tuple[str, object, list[str]]] = [
+            (
+                "num",
+                Pipeline(
+                    [
+                        ("impute", SimpleImputer(strategy="median", keep_empty_features=True)),
+                        ("scale", StandardScaler()),
+                    ]
+                ),
+                self.numeric_features,
+            ),
+            (
+                "cat",
+                Pipeline(
+                    [
+                        ("impute", SimpleImputer(strategy="most_frequent")),
+                        ("onehot", OneHotEncoder(handle_unknown="ignore")),
+                    ]
+                ),
+                self.categorical_features,
+            ),
+        ]
+        if self.location_features:
+            steps.append(
+                (
+                    "loc",
+                    LocationPriceEncoder(
+                        levels=self.location_features, random_state=self.random_state
+                    ),
+                    self.location_features,
+                )
+            )
+        return ColumnTransformer(steps, remainder="drop", verbose_feature_names_out=False)
+
+    def _to_model_target(self, df: pd.DataFrame, price: np.ndarray) -> np.ndarray:
+        """가격(원) → 모델이 맞히는 값. 역변환은 ``_to_price``."""
+        if not self.log_target:
+            return price
+        if (price <= 0).any():
+            raise ValueError("로그 타깃에는 0 이하의 가격을 쓸 수 없습니다.")
+        if self.market_ is None:
+            return np.log(price)
+        area = pd.to_numeric(df[S.AREA_M2], errors="coerce").to_numpy("float64")
+        if not np.isfinite(area).all() or (area <= 0).any():
+            raise ValueError("상대가격 학습에는 모든 행의 전용면적이 필요합니다.")
+        return np.log(price / area) - self.market_.transform(df)
+
+    def _to_price(self, df: pd.DataFrame, pred: np.ndarray, *, correct: bool = True) -> np.ndarray:
+        """모델 출력 → 가격(원).
+
+        로그를 씌워 학습하고 ``exp`` 로 되돌리면 평균이 아니라 **중앙값**이 복원된다.
+        로그를 씌우는 순간 분포가 눌리고, 되돌릴 때 위쪽 꼬리가 되살아나지 않아
+        예측이 체계적으로 낮아진다. 잔차 분산의 절반을 지수로 올린 보정계수
+        ``exp(sigma^2 / 2)`` 를 곱하면 그만큼이 복원된다 (``calibrate`` 참고).
+        """
+        if not self.log_target:
+            return pred
+        factor = self.log_bias_factor_ if correct else 1.0
+        if self.market_ is None:
+            return np.exp(pred) * factor
+        area = pd.to_numeric(df[S.AREA_M2], errors="coerce").to_numpy("float64")
+        return np.exp(pred + self.market_.transform(df)) * area * factor
+
     def fit(
         self, train: pd.DataFrame, y: pd.Series | np.ndarray | None = None
     ) -> PriceRegressionModel:
-        """train: 전처리된 거래 DataFrame. y 생략 시 ``train['price_krw']`` 사용."""
+        """train: 전처리된 거래 DataFrame. y 생략 시 ``train['price_krw']`` 사용.
+
+        ``relative_to_market=True`` 면 시장지수를 **이 학습 데이터에서** 만든다.
+        운영처럼 최신 지수를 쓰려면 ``market_index=`` 로 직접 넘긴다.
+        """
         X = to_model_frame(train, self.feature_columns)
-        target = train[S.REGRESSION_TARGET] if y is None else y
-        target = np.asarray(target, dtype="float64")
+        price = np.asarray(train[S.REGRESSION_TARGET] if y is None else y, dtype="float64")
         if len(X) == 0:
             raise ValueError("학습 데이터가 비어 있습니다.")
-        if len(target) != len(X) or not np.isfinite(target).all():
+        if len(price) != len(X) or not np.isfinite(price).all():
             raise ValueError("정답값(price_krw)의 길이가 맞지 않거나 결측이 있습니다.")
-        pipeline = Pipeline(
-            [
-                (
-                    "preprocess",
-                    build_feature_preprocessor(self.numeric_features, self.categorical_features),
-                ),
-                ("model", self.estimator),
-            ]
-        )
+        if self.relative_to_market and self.market_ is None:
+            self.market_ = MarketIndex().fit(train.assign(**{S.REGRESSION_TARGET: price}))
+        target = self._to_model_target(train, price)
+        pipeline = Pipeline([("preprocess", self._build_preprocessor()), ("model", self.estimator)])
         pipeline.fit(X, target)
         self.pipeline = pipeline
+        self.log_bias_factor_ = 1.0  # 다시 학습했으면 이전 보정은 무효
         ranges = {
             c: (float(X[c].min()), float(X[c].max()))
             for c in self.numeric_features
@@ -113,15 +222,59 @@ class PriceRegressionModel:
             "trained_at": utc_now_iso(),
             "n_train": int(len(X)),
             "feature_columns": self.feature_columns,
+            "location_features": self.location_features,
+            "log_target": self.log_target,
+            "relative_to_market": self.market_ is not None,
+            "log_bias_factor": self.log_bias_factor_,
             "feature_ranges": ranges,
             "train_date_range": _date_range(train),
         }
         return self
 
-    def predict(self, X: pd.DataFrame) -> np.ndarray:
+    def calibrate(self, holdout: pd.DataFrame, y: pd.Series | np.ndarray | None = None) -> float:
+        """로그 복원 편향 보정계수를 **학습에 쓰지 않은** 구간에서 정한다.
+
+        학습 데이터의 잔차는 과적합 때문에 실제보다 작아서 보정이 모자라고,
+        평가 구간(test)에서 구하면 평가 대상을 보고 맞추는 것이라 반칙이다.
+        그래서 별도 검증 구간(valid)을 넘겨 받는다.
+        """
         if self.pipeline is None:
             raise ModelNotReadyError(f"회귀 모델 '{self.name}' 이 학습되지 않았습니다.")
-        return self.pipeline.predict(to_model_frame(X, self.feature_columns))
+        if not self.log_target:
+            self.log_bias_factor_ = 1.0
+            return 1.0
+        price = np.asarray(holdout[S.REGRESSION_TARGET] if y is None else y, dtype="float64")
+        pred = self._predict(holdout, correct=False)
+        ok = (price > 0) & (pred > 0)
+        if ok.sum() < 2:
+            raise ValueError("보정계수를 구할 수 있는 행이 2개 미만입니다.")
+        variance = float(np.var(np.log(price[ok]) - np.log(pred[ok])))
+        self.log_bias_factor_ = float(np.exp(variance / 2))
+        self.metadata["log_bias_factor"] = self.log_bias_factor_
+        self.metadata["log_bias_calibrated_on"] = _date_range(holdout)
+        return self.log_bias_factor_
+
+    def set_log_bias_factor(self, factor: float, *, source: object = None) -> None:
+        """다른 구간에서 구한 보정계수를 그대로 적용한다.
+
+        배포본은 valid 까지 넣어 다시 학습하므로 자기 자신에게는 보정계수를 구할
+        구간이 남지 않는다. valid 를 넣기 전 모델에서 구한 값을 가져와 쓴다.
+        """
+        if not np.isfinite(factor) or factor <= 0:
+            raise ValueError(f"보정계수는 0보다 큰 유한한 수여야 합니다: {factor!r}")
+        self.log_bias_factor_ = float(factor)
+        self.metadata["log_bias_factor"] = float(factor)
+        if source is not None:
+            self.metadata["log_bias_calibrated_on"] = source
+
+    def _predict(self, X: pd.DataFrame, *, correct: bool = True) -> np.ndarray:
+        if self.pipeline is None:
+            raise ModelNotReadyError(f"회귀 모델 '{self.name}' 이 학습되지 않았습니다.")
+        pred = self.pipeline.predict(to_model_frame(X, self.feature_columns))
+        return self._to_price(X, pred, correct=correct)
+
+    def predict(self, X: pd.DataFrame) -> np.ndarray:
+        return self._predict(X)
 
     def evaluate(
         self, data: pd.DataFrame, y: pd.Series | np.ndarray | None = None
@@ -133,13 +286,25 @@ class PriceRegressionModel:
     def save(self, path: str | Path) -> Path:
         if not self.is_fitted:
             raise ModelNotReadyError("학습되지 않은 모델은 저장할 수 없습니다.")
-        return save_artifact(self, {**self.metadata, "kind": "price_regression"}, path)
+        meta = {
+            **self.metadata,
+            "kind": "price_regression",
+            "prediction_contract": PREDICTION_CONTRACT,
+        }
+        return save_artifact(self, meta, path)
 
     @classmethod
     def load(cls, path: str | Path) -> PriceRegressionModel:
         obj, meta = load_artifact(path)
         if not isinstance(obj, cls) or meta.get("kind") != "price_regression":
             raise ModelNotReadyError(f"가격 회귀 모델 파일이 아닙니다: {path}")
+        saved = meta.get("prediction_contract")
+        if saved != PREDICTION_CONTRACT:
+            raise ModelNotReadyError(
+                f"이 모델 파일은 예측 방식이 다른 버전의 코드로 저장되었습니다 "
+                f"(파일 {saved!r}, 현재 {PREDICTION_CONTRACT}). "
+                f"scripts/train_price.py 로 다시 학습하세요: {path}"
+            )
         return obj
 
 

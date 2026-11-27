@@ -243,6 +243,11 @@ def ensure_optional_columns(df: pd.DataFrame) -> pd.DataFrame:
     for col in (*S.RATE_COLUMNS, *S.RATE_CHANGE_COLUMNS, *S.REGULATION_SCORE_COLUMNS):
         if col not in out.columns:
             out[col] = np.nan
+    # 동·단지는 회귀의 위치 인코딩 입력이다. API 단건 입력에는 없을 수 있으므로 null 로 채운다.
+    # 그 경우 인코더가 전체 평균을 쓰므로 자치구 수준의 (더 거친) 추정이 된다.
+    for col in (S.DONG, S.COMPLEX_ID):
+        if col not in out.columns:
+            out[col] = pd.Series(pd.NA, index=out.index, dtype="string")
     return out
 
 

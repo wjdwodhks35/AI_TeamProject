@@ -27,8 +27,12 @@ split:
 random_seed: 42
 
 models:
-  price_model_path: models/price_model.joblib
+  # scripts/train_price.py 가 저장하는 경로와 같아야 합니다 (예전 값은 price_model.joblib
+  # 이었는데 스크립트는 price_regression.joblib 에 저장해서 API 가 모델을 못 찾았습니다).
+  price_model_path: models/price_regression.joblib
   anomaly_model_path: models/anomaly_model.joblib
+  # 자치구 -> 동 -> 단지 목록. GET /locations/{자치구} 가 이 파일을 내려줍니다.
+  complex_directory_path: models/complex_directory.json
 
 classification:
   # 이상거래 레이블의 정의·생성 기준이 확정되기 전까지 false 를 유지합니다.
