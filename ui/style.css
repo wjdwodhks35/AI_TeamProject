@@ -70,6 +70,7 @@ h3 {
 }
 
 .mock-toggle {
+  white-space: nowrap; /* 좁은 폭에서 '개발용 / 가짜 / 응답' 으로 쪼개지지 않게 */
   display: inline-flex;
   gap: 0.3rem;
   align-items: center;
@@ -170,10 +171,22 @@ button.ghost {
 
 .district-picker {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 190px;
+  /* 단지명이 길어서 190px 보다 넓게 둔다 */
+  grid-template-columns: minmax(0, 1fr) 230px;
   gap: 1.5rem;
   align-items: start;
   margin-top: 0.75rem;
+}
+
+/* 지도 옆 칸에 자치구 -> 동 -> 단지를 세로로 좁혀 간다 */
+.district-fields {
+  display: grid;
+  gap: 1rem;
+}
+
+.district-fields select:disabled {
+  color: #8a8a8a;
+  background: #f4f4f4;
 }
 
 @media (max-width: 680px) {
