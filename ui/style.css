@@ -1,0 +1,324 @@
+/* 최소 스타일. 레이아웃과 가독성만 잡고 꾸미지 않는다. */
+
+:root {
+  --line: #d8d8d8;
+  --text: #1a1a1a;
+  --muted: #6b6b6b;
+  --bg-soft: #f6f6f6;
+  --bad: #a01b1b;
+  --warn: #8a6100;
+  --ok: #1d6b3a;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  padding: 0 1.5rem 4rem;
+  max-width: 940px;
+  margin-inline: auto;
+  font-family: system-ui, "Segoe UI", "Malgun Gothic", sans-serif;
+  color: var(--text);
+  line-height: 1.5;
+}
+
+h1 {
+  font-size: 1.25rem;
+  margin: 0;
+}
+
+h2 {
+  font-size: 1.05rem;
+  margin: 0 0 0.25rem;
+}
+
+h3 {
+  font-size: 0.95rem;
+  margin: 1.25rem 0 0.25rem;
+}
+
+/* ---------------------------------------------------------------- 상단 */
+
+.topbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  align-items: center;
+  justify-content: space-between;
+  padding: 1.25rem 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.topbar-right {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  align-items: center;
+  font-size: 0.85rem;
+}
+
+.health.ok {
+  color: var(--ok);
+}
+.health.warn {
+  color: var(--warn);
+}
+.health.bad {
+  color: var(--bad);
+}
+
+.mock-toggle {
+  display: inline-flex;
+  gap: 0.3rem;
+  align-items: center;
+  color: var(--muted);
+}
+
+.banner {
+  margin: 1rem 0 0;
+  padding: 0.75rem;
+  border: 1px solid var(--bad);
+  color: var(--bad);
+  font-size: 0.85rem;
+}
+
+/* ---------------------------------------------------------------- 입력 */
+
+form {
+  padding: 1.5rem 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.field-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  gap: 1rem;
+  margin-top: 0.75rem;
+}
+
+.field.wide {
+  grid-column: 1 / -1;
+  max-width: 320px;
+}
+
+label {
+  display: block;
+  font-size: 0.85rem;
+  margin-bottom: 0.25rem;
+}
+
+input,
+select {
+  width: 100%;
+  padding: 0.4rem 0.5rem;
+  font: inherit;
+  font-size: 0.9rem;
+  color: inherit;
+  border: 1px solid var(--line);
+  background: #fff;
+}
+
+input:focus,
+select:focus {
+  outline: 2px solid var(--text);
+  outline-offset: -1px;
+}
+
+.req {
+  color: var(--bad);
+}
+
+.hint {
+  margin: 0.25rem 0 0;
+  font-size: 0.78rem;
+  color: var(--muted);
+}
+
+.field-error {
+  margin: 0.25rem 0 0;
+  font-size: 0.78rem;
+  color: var(--bad);
+  min-height: 1em;
+}
+
+button {
+  font: inherit;
+  font-size: 0.9rem;
+  padding: 0.45rem 0.9rem;
+  border: 1px solid var(--text);
+  background: var(--text);
+  color: #fff;
+  cursor: pointer;
+}
+
+button:disabled {
+  opacity: 0.5;
+  cursor: progress;
+}
+
+button.ghost {
+  padding: 0.25rem 0.6rem;
+  font-size: 0.8rem;
+  background: #fff;
+  color: var(--text);
+  border-color: var(--line);
+}
+
+/* ---------------------------------------------------------------- 자치구 지도 */
+
+.district-picker {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 190px;
+  gap: 1.5rem;
+  align-items: start;
+  margin-top: 0.75rem;
+}
+
+@media (max-width: 680px) {
+  .district-picker {
+    grid-template-columns: 1fr;
+    gap: 0.75rem;
+  }
+}
+
+.seoul-map {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+
+/* --gu-h 는 map.js 가 구마다 넣어주는 색상환 각도다. */
+.gu path {
+  fill: hsl(var(--gu-h), 45%, 80%);
+  stroke: #fff;
+  stroke-width: 1.2;
+  cursor: pointer;
+  transition: fill 0.1s;
+}
+
+.gu:hover path {
+  fill: hsl(var(--gu-h), 55%, 68%);
+}
+
+.gu.selected path {
+  fill: hsl(var(--gu-h), 55%, 32%);
+}
+
+.gu text {
+  font-size: 13px;
+  text-anchor: middle;
+  dominant-baseline: middle;
+  fill: #3c3c3c;
+  pointer-events: none;
+  user-select: none;
+}
+
+.gu.selected text {
+  fill: #fff;
+}
+
+/* ---------------------------------------------------------------- 탭 */
+
+.tabs {
+  display: flex;
+  gap: 0;
+  margin: 1.5rem 0 0;
+  border-bottom: 1px solid var(--line);
+}
+
+[role="tab"] {
+  background: none;
+  border: 1px solid transparent;
+  border-bottom: none;
+  color: var(--muted);
+  padding: 0.5rem 1rem;
+  margin-bottom: -1px;
+}
+
+[role="tab"][aria-selected="true"] {
+  color: var(--text);
+  font-weight: 600;
+  border-color: var(--line);
+  background: #fff;
+}
+
+.panel {
+  padding: 1.25rem 0;
+}
+
+.run {
+  margin-top: 1rem;
+}
+
+/* ---------------------------------------------------------------- 결과 */
+
+.result {
+  margin-top: 1.25rem;
+}
+
+.box {
+  padding: 1rem;
+  border: 1px solid var(--line);
+  background: var(--bg-soft);
+}
+
+.box.bad {
+  border-color: var(--bad);
+  background: #fff;
+}
+
+.box h3 {
+  margin: 0 0 0.5rem;
+}
+
+.headline {
+  margin: 0 0 0.75rem;
+  font-size: 1.6rem;
+  font-weight: 600;
+}
+
+.code-line {
+  margin: 0 0 0.5rem;
+  font-size: 0.8rem;
+  color: var(--muted);
+}
+
+code {
+  font-family: ui-monospace, Consolas, monospace;
+  font-size: 0.85em;
+}
+
+table.kv {
+  border-collapse: collapse;
+  width: 100%;
+  font-size: 0.88rem;
+}
+
+table.kv th,
+table.kv td {
+  text-align: left;
+  padding: 0.35rem 0.5rem;
+  border-top: 1px solid var(--line);
+  vertical-align: top;
+}
+
+table.kv th {
+  width: 40%;
+  font-weight: 500;
+  color: var(--muted);
+}
+
+.warnings {
+  margin: 0.75rem 0 0;
+  padding-left: 1.2rem;
+  font-size: 0.82rem;
+  color: var(--warn);
+}
+
+.disclaimer {
+  margin: 0.75rem 0 0;
+  font-size: 0.82rem;
+  color: var(--muted);
+}
