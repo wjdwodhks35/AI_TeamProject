@@ -114,6 +114,14 @@ class AnomalyPredictionResponse(BaseModel):
     )
     price_gap_pct: float | None = Field(None, description="(거래가 - 기준가격) / 기준가격 × 100")
     model_name: str
+    # 규칙 판정. 모델보다 성능이 좋아서 같이 돌려준다 (models/anomaly_rules.py).
+    rule_level: str = Field(
+        ..., description="strong(강한 의심) / suspect(의심) / normal(의심 아님)"
+    )
+    rule_label: str = Field(..., description="rule_level 을 사람이 읽는 말로")
+    rule_reasons: list[str] = Field(
+        default_factory=list, description="그 판정이 나온 이유. 화면에 그대로 보여주세요"
+    )
     warnings: list[str] = Field(default_factory=list)
 
 

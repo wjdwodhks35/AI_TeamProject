@@ -259,3 +259,23 @@ def test_price_warns_about_complex_input(located_client):
     assert any("complex_id" in w for w in warnings({}))
     assert any("찾지 못했습니다" in w for w in warnings({"complex_id": "99999-1"}))
     assert warnings({"dong": "대치동", "complex_id": "11680-218"}) == []
+
+
+# -- 규칙 판정 ------------------------------------------------------------------
+# 분류 모델의 레이블은 '기준가보다 싼 거래' 인데 분류 입력에 기준가가 없어 모델이
+# 규칙을 복원하지 못한다. 기준가는 응답에 이미 있으므로 규칙을 같이 낸다.
+
+
+def test_rule_verdict_levels():
+    from apartment_ml.models.anomaly_rules import RuleLevel, rule_verdict
+
+    assert rule_verdict(-30.0, True).level is RuleLevel.STRONG
+    assert rule_verdict(-30.0, False).level is RuleLevel.SUSPECT
+    assert rule_verdict(-5.0, True).level is RuleLevel.SUSPECT
+    assert rule_verdict(-5.0, False).level is RuleLevel.NORMAL
+    assert rule_verdict(None).level is RuleLevel.NORMAL  # 기준가 없으면 판정하지 않는다
+
+    # 직거래 여부를 모르면 가격만 보고, 그 사실을 알려 준다
+    unknown = rule_verdict(-5.0, None)
+    assert unknown.level is RuleLevel.NORMAL
+    assert any("직거래 여부" in r for r in unknown.reasons)

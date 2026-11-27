@@ -1,27 +1,37 @@
-# AI_TeamProject
-2학년 2학기 인공지능 기말 팀프로젝트
+# 서울 아파트 실거래가 추정
 
-## 집 가고 싶다
+한국공학대학교 2학년 2학기 인공지능 기말 팀프로젝트.
 
----
+국토교통부 실거래가로 서울 25개 자치구 아파트의 거래가격을 추정하고, 이상거래 의심
+여부를 판정하며, 금리 조건을 바꿔 보고, 향후 가격을 내다봅니다. 학습부터 웹 화면까지
+한 저장소에 있고 `deploy.bat` / `deploy.sh` 한 번으로 전부 뜹니다.
 
-# 서울 아파트 가격 예측 및 이상거래 의심 탐지 시스템
+## 결과 요약
 
-머신러닝으로 서울 25개 자치구 아파트의 거래가격을 예측하고, 이상거래 의심 여부를 판정하며,
-기준금리 조건에 따른 예측가격 변화를 비교하는 시스템입니다.
+**가격 예측은 기준선을 크게 넘었고, 이상거래 분류는 넘지 못했습니다.** 두 결과를
+나란히 두는 것이 이 프로젝트의 결론입니다.
 
-> **현재 단계: Phase 0 — 공통 개발 기반.**
-> 데이터 계약, 전처리, 시간순 분할, 평가 지표, 모델/시나리오 인터페이스, API 계약, 테스트, CI까지 갖춰져 있습니다.
-> 실제 데이터 수집, 모델 학습, UI 개발은 각 담당자가 `feature/*` 브랜치에서 진행합니다.
-> 저장소에 있는 샘플 데이터는 **합성(가짜) 데이터**이므로, 이 데이터로 얻은 수치를 성능으로 해석하면 안 됩니다.
-
-| 기능 | 내용 | Phase 0 상태 |
+| 기능 | 기준선 (학습 없음) | 우리 모델 |
 |---|---|---|
-| A. 가격 예측 | 회귀 (LinearRegression 기준, RandomForest 비교) | 인터페이스·학습 래퍼 완료, 실제 학습은 하지 않음 |
-| B. 이상거래 의심 탐지 | DecisionTree / RandomForest / Boosting / Voting | 인터페이스만 정의 (레이블 미확보로 학습 차단) |
-| C. 금리 시나리오 | 금리만 바꿨을 때 예측가격 비교 | 계산 인터페이스 완료, 학습 모델이 없으면 503 |
-| D. 웹 UI | 입력 → 결과 화면 | API 계약만 제공 |
-| E. 12개월 예측 | 미래 가격 추이 | 설계 과제로 문서화 ([MODEL_PLAN](docs/MODEL_PLAN.md)) |
+| A. 가격 예측 | 자치구+평형 중앙값 — MAE 3.59억, R² 0.603 | **MAE 1.12억, R² 0.952, MAPE 9.3%** |
+| B. 이상거래 의심 | 규칙 두 줄 — **F1 0.429** | 분류 모델 F1 0.194 |
+
+가격 회귀가 기준선을 넘은 것은 구조를 세 번 바꾼 결과입니다 — 절대가격 대신 직전월
+시세 대비 상대가격, 위치를 단지 단위까지, 부스팅으로 교체. 이상거래 분류가 넘지 못한
+것은 레이블이 `가격 < 기준가 × 0.8` 인데 분류 입력에 기준가를 넣을 수 없기 때문입니다
+(넣으면 레이블 공식을 되계산하게 됩니다). 자세한 측정은
+[MODEL_PLAN](docs/MODEL_PLAN.md) 에 있습니다.
+
+| 기능 | 내용 | 상태 |
+|---|---|---|
+| A. 가격 예측 | HistGradientBoosting, 시세 대비 상대가격 | 완료 · `POST /predict/price` |
+| B. 이상거래 의심 | 규칙 3단계 + 분류 모델 4종 비교 | 완료 · `POST /predict/anomaly` |
+| C. 금리 시나리오 | 금리만 바꿨을 때 예측가격 비교 | 완료 · `POST /scenario/interest-rate` |
+| D. 웹 UI | 지도에서 자치구 → 동 → 단지 선택, 결과 4탭 | 완료 · `ui/` |
+| E. 향후 N개월 예측 | 시장지수를 내다보고 80% 구간까지 | 완료 · `POST /forecast/price` |
+
+학습된 모델 파일은 `models/` 에 **같이 올려 두었습니다**(압축해서 12MB). 받자마자
+실행할 수 있습니다. `data/raw` 와 `data/processed` 는 올리지 않습니다.
 
 ## 기술 스택
 Python 3.11+, pandas, NumPy, scikit-learn, FastAPI, Pydantic v2, Uvicorn, pytest, Ruff, GitHub Actions.
@@ -35,8 +45,14 @@ Python 3.11+, pandas, NumPy, scikit-learn, FastAPI, Pydantic v2, Uvicorn, pytest
 │   ├── raw/                     # 원본 수집 데이터 (Git 제외)
 │   ├── processed/               # 정규화·전처리 결과 (Git 제외)
 │   └── sample/                  # 합성 테스트 데이터 (*_TEST_ONLY.csv)
-├── models/                      # 학습된 모델 파일 *.joblib (Git 제외)
-├── scripts/generate_sample_data.py
+├── models/                      # 학습된 모델 (압축해서 저장소에 포함, 12MB)
+│   ├── price_regression.joblib      #   가격 회귀 + 시장지수 + 보정계수
+│   ├── complex_directory.json       #   자치구 → 동 → 단지 목록 (7,868개)
+│   ├── anomaly_model.joblib         #   이상거래 분류
+│   └── anomaly_model_metrics.json   #   모델별 지표와 규칙 기준선
+├── ui/                          # 정적 웹 화면 (빌드 도구 없음)
+├── deploy.bat / deploy.sh       # API + UI 를 한 포트(8010)로 실행
+├── scripts/                     # generate_sample_data · build_dataset · train_price · train_anomaly
 ├── src/apartment_ml/
 │   ├── schemas.py               # ★ 공통 데이터 계약 (컬럼명, 유효 범위, 입력 변수/정답값 구분)
 │   ├── config.py                # 설정 및 API 키 로딩
@@ -44,6 +60,8 @@ Python 3.11+, pandas, NumPy, scikit-learn, FastAPI, Pydantic v2, Uvicorn, pytest
 │   ├── data/      collect.py · merge.py · preprocess.py
 │   ├── evaluation/ split.py · metrics.py
 │   ├── models/    base.py · regression.py · classification.py · ensemble.py
+│   │               market_index.py · location_price.py · complex_directory.py
+│   │               forecast.py · anomaly_rules.py
 │   ├── scenarios/ interest_rate.py
 │   └── api/       main.py · schemas.py
 ├── tests/                       # pytest (외부 네트워크 차단)
@@ -55,7 +73,6 @@ Python 3.11+, pandas, NumPy, scikit-learn, FastAPI, Pydantic v2, Uvicorn, pytest
 ```bash
 git clone https://github.com/wjdwodhks35/AI_TeamProject.git
 cd AI_TeamProject
-git checkout dev
 
 python3.11 -m venv .venv          # 3.11 이상
 source .venv/bin/activate         # Windows: .venv\Scripts\activate
@@ -67,17 +84,28 @@ cp .env.example .env              # 실제 API 키는 .env 에만 넣습니다 (
 (macOS/Linux: `set -a; source .env; set +a`)
 
 ## 실행 방법
-```bash
-# 1) 최소 실행 경로: 샘플 로딩 → 검증/전처리 → 금리·규제 병합 → 시간순 분할 요약
-python -m apartment_ml.pipeline
 
-# 2) API 서버 → http://127.0.0.1:8000/docs
-uvicorn apartment_ml.api.main:app --reload
-curl http://127.0.0.1:8000/health
+### 화면까지 한 번에 (권장)
+
 ```
-학습된 모델 파일(`models/price_model.joblib` 등)이 없으면, 예측 엔드포인트는 **503 `MODEL_NOT_READY`** 를 반환합니다.
+deploy.bat          # 윈도우 — 더블클릭해도 됩니다
+./deploy.sh         # 리눅스
+```
 
-승인된 레이블을 확보하면 `scripts/train_anomaly.py`로 이상거래 분류 모델을 학습할 수 있습니다. [학습 및 백엔드 연동](docs/MODEL_PLAN.md#학습-및-백엔드-연동)
+API 와 웹 화면이 <http://localhost:8010> 한 포트에 뜹니다 (API 문서는 `/docs`).
+처음 한 번은 가상환경을 만드느라 몇 분 걸리고, 그 다음부터는 바로 뜹니다. 화면 파일을
+고치면 브라우저 새로고침만 하면 반영됩니다. 자세한 사용법은 [ui/README](ui/README.md).
+
+### 다시 학습하기
+
+`data/processed/training_dataset.csv` 가 있어야 합니다 (원본 데이터는 저장소에 없습니다).
+
+```bash
+python scripts/train_price.py          # 가격 회귀 + 단지 목록
+python scripts/train_anomaly.py --label-source "<레이블 기준과 확정 날짜>"
+```
+
+모델 파일을 다시 커밋하면 히스토리에 그만큼 쌓입니다. 자주 올리지 마세요.
 
 ## 테스트 및 정적 검사
 ```bash

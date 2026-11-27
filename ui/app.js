@@ -125,6 +125,9 @@ function collectFeatures() {
   if (Number.isNaN(baseRate)) errors.base_rate = "숫자로 입력하세요.";
   else if (baseRate !== undefined) features.base_rate = baseRate;
 
+  const directDeal = $("is_direct_deal").value;
+  if (directDeal !== "") features.is_direct_deal = directDeal === "1";
+
   const regulation = regulationOrUndefined();
   if (regulation !== undefined) features.regulation = regulation;
 
@@ -269,14 +272,24 @@ function renderPrice(container, data) {
 }
 
 function renderAnomaly(container, data) {
-  const verdict = data.is_suspicious ? "의심" : "의심 아님";
+  // 규칙 판정을 앞에 둔다. 분류 모델은 레이블이 쓰는 기준가를 입력으로 받지 않아
+  // 규칙을 복원하지 못한다 (test F1 규칙 0.429 vs 모델 0.194).
+  const modelVerdict = data.is_suspicious ? "의심" : "의심 아님";
+  const reasons = (data.rule_reasons ?? [])
+    .map((r) => `<li>${escapeHtml(r)}</li>`)
+    .join("");
+
   container.innerHTML = `<div class="box">
       <h3>이상거래 의심 판정</h3>
-      <p class="headline">${escapeHtml(verdict)}</p>
+      <p class="headline">${escapeHtml(data.rule_label ?? modelVerdict)}</p>
+      ${reasons ? `<ul class="reasons">${reasons}</ul>` : ""}
       ${rows([
-        ["의심 점수", `${formatPct(data.suspicion_score * 100)} (임계값 ${formatPct(data.threshold * 100)})`],
         ["기준가격", data.reference_price_krw === null ? "없음 (가격 모델 미준비)" : formatKrw(data.reference_price_krw)],
         ["기준가격 대비", data.price_gap_pct === null ? "-" : formatPct(data.price_gap_pct)],
+        [
+          "분류 모델 판정",
+          `${escapeHtml(modelVerdict)} (점수 ${formatPct(data.suspicion_score * 100)}, 임계값 ${formatPct(data.threshold * 100)})`,
+        ],
         ["사용 모델", data.model_name ?? "-"],
       ])}
       ${warningList(data.warnings)}

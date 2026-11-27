@@ -44,6 +44,7 @@ from apartment_ml.api.schemas import (
 )
 from apartment_ml.config import get_cors_origins, get_settings
 from apartment_ml.data.preprocess import add_price_features
+from apartment_ml.models.anomaly_rules import RuleLevel, rule_verdict
 from apartment_ml.models.base import AnomalyDetector, ModelNotReadyError, PricePredictor
 from apartment_ml.models.complex_directory import ComplexDirectory, ComplexDirectoryError
 from apartment_ml.models.forecast import (
@@ -427,6 +428,16 @@ def create_app(
                 gap = (body.price_krw - reference) / reference * 100.0
         else:
             warnings.append("가격 모델이 없어 기준가격을 제공하지 않습니다.")
+
+        # 규칙 판정을 같이 낸다. 모델의 레이블은 '기준가보다 싼 거래' 인데 분류 입력에
+        # 기준가가 없어서 모델이 규칙을 복원하지 못한다. 기준가는 응답에 이미 있으므로
+        # 규칙을 그대로 적용하면 된다. test F1 모델 0.194 vs 규칙 0.429.
+        verdict = rule_verdict(gap, body.is_direct_deal)
+        if verdict.level is not RuleLevel.NORMAL and not (score >= threshold):
+            warnings.append(
+                "규칙과 모델의 판정이 다릅니다. 측정상 규칙이 더 정확하므로 "
+                "(F1 0.429 vs 0.194) 규칙 판정을 먼저 보세요."
+            )
         return AnomalyPredictionResponse(
             is_suspicious=score >= threshold,
             suspicion_score=score,
@@ -434,6 +445,9 @@ def create_app(
             reference_price_krw=reference,
             price_gap_pct=gap,
             model_name=model.name,
+            rule_level=str(verdict.level),
+            rule_label=verdict.label,
+            rule_reasons=verdict.reasons,
             warnings=warnings,
         )
 

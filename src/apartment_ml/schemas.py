@@ -521,6 +521,11 @@ class ApartmentFeatures(BaseModel):
         description="단지 일련번호(aptSeq). GET /locations/{자치구} 참고",
         examples=["11680-2234"],
     )
+    # 이상거래 규칙이 쓰는 값. 이상으로 확인된 건에 직거래가 몰려 있다
+    # (전체 2.74% vs 1단계 싸게 67%).
+    is_direct_deal: bool | None = Field(
+        None, description="중개 없이 직접 거래했는지. 모르면 비워 둡니다."
+    )
 
     @field_validator("district")
     @classmethod
@@ -545,6 +550,7 @@ class ApartmentFeatures(BaseModel):
             # 동만 있고 단지 없음 4.85억 — 학습 때 본 적 없는 조합이라 오히려 더 나쁘다.
             DONG: dong if complex_id else None,
             COMPLEX_ID: complex_id,
+            IS_DIRECT_DEAL: None if self.is_direct_deal is None else int(self.is_direct_deal),
         }
         record.update((self.regulation or RegulationInfo()).to_columns())
         return record
