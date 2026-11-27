@@ -4,11 +4,11 @@ import {
   ApiError,
   SEOUL_DISTRICTS,
   getHealth,
-  getLocations,
   predictAnomaly,
   predictPrice,
   scenarioInterestRate,
 } from "./api.js";
+import { setupDistrictMap } from "./map.js";
 import {
   mockPredictAnomaly,
   mockPredictPrice,
@@ -19,17 +19,7 @@ const $ = (id) => document.getElementById(id);
 
 let useMock = false;
 
-/** 현재 자치구의 동·단지 목록. 자치구를 바꿀 때마다 한 번 받아 둔다. */
-let locations = null;
-
 // ---------------------------------------------------------------- 숫자 표시
-
-/**
- * 배포된 모델의 test 구간 평균오차(MAE). 큰 숫자 하나만 띄우면 그 값이 정확한 것처럼
- * 보이므로 같이 표시한다. **모델을 다시 학습하면 이 값도 고쳐야 한다** —
- * 출처는 docs/MODEL_PLAN.md §1 의 배포본 행이다.
- */
-const MODEL_MAE_KRW = 112_000_000;
 
 /** 2350000000 → "23억 5,000만원" */
 function formatKrw(value) {
@@ -47,20 +37,6 @@ function formatKrw(value) {
   if (manwon) parts.push(`${manwon.toLocaleString("ko-KR")}만`);
   if (parts.length === 0) return `${sign}${abs.toLocaleString("ko-KR")}원`;
   return `${sign}${parts.join(" ")}원`;
-}
-
-/** 큰 금액 표시용. 숫자는 크게, 단위(억·만원)는 작게 깐다. */
-function amountMarkup(value) {
-  const text = formatKrw(value);
-  const marked = text.replace(/[억만원]/g, (unit) => `<span class="amount-unit">${unit}</span>`);
-  return `<p class="amount">${marked}</p>`;
-}
-
-/** 1.12억 같은 짧은 표기. 오차처럼 자릿수가 중요하지 않은 값에 쓴다. */
-function formatEok(value) {
-  const n = Number(value);
-  if (!Number.isFinite(n)) return "-";
-  return `${(n / 100_000_000).toFixed(2)}억`;
 }
 
 function formatWon(value) {
@@ -107,13 +83,6 @@ function collectFeatures() {
   const district = $("district").value;
   if (!district) errors.district = "자치구를 선택하세요.";
   else features.district = district;
-
-  // 단지는 형식상 선택이지만 정확도에 가장 큰 영향을 준다. 서버는 단지가 없으면
-  // 동도 쓰지 않는다 (동만 있는 조합은 학습 때 본 적이 없어 오차가 더 커진다).
-  const complexId = $("complex_id").value;
-  const dong = $("dong").value;
-  if (complexId) features.complex_id = complexId;
-  if (dong) features.dong = dong;
 
   const contractDate = $("contract_date").value;
   if (!contractDate) errors.contract_date = "계약일을 입력하세요.";
@@ -173,7 +142,7 @@ function showIssues(issues) {
 
 function renderError(container, error) {
   if (!(error instanceof ApiError)) {
-    container.innerHTML = `<div class="record bad"><span class="tag">알 수 없는 오류</span><p>${escapeHtml(
+    container.innerHTML = `<div class="box bad"><h3>알 수 없는 오류</h3><p>${escapeHtml(
       String(error?.message ?? error),
     )}</p></div>`;
     return;
@@ -216,10 +185,10 @@ function renderError(container, error) {
     : "";
   const status = error.status ? `HTTP ${error.status} · ` : "";
 
-  container.innerHTML = `<div class="record bad">
-      <span class="tag">${escapeHtml(title)}</span>
-      <p>${body}</p>
+  container.innerHTML = `<div class="box bad">
+      <h3>${escapeHtml(title)}</h3>
       <p class="code-line">${status}<code>${escapeHtml(error.code)}</code></p>
+      <p>${body}</p>
       ${requestId}
     </div>`;
 }
@@ -230,25 +199,10 @@ function escapeHtml(value) {
   });
 }
 
-/**
- * 서버 경고문은 API 사용자를 향해 쓰여 있어서 엔드포인트 이름과 필드명이 들어간다.
- * 화면에서는 이 페이지에서 할 수 있는 조작으로 바꿔 보여준다.
- * 원문은 api/main.py 의 NO_COMPLEX_WARNING 과 docs/API_CONTRACT.md 참고.
- */
-function humanizeWarning(text) {
-  if (text.includes("complex_id") && text.includes("지정하지 않아")) {
-    return "단지를 고르지 않아 자치구 평균으로 추정했습니다. 위 '단지'에서 고르면 평균오차가 4.18억에서 1.41억으로 줄어듭니다.";
-  }
-  if (text.includes("찾지 못했습니다")) {
-    return `${text} 목록에 있는 단지를 고르면 정확해집니다.`;
-  }
-  return text;
-}
-
 function warningList(warnings) {
   if (!Array.isArray(warnings) || warnings.length === 0) return "";
   return `<ul class="warnings">${warnings
-    .map((w) => `<li>${escapeHtml(humanizeWarning(String(w)))}</li>`)
+    .map((w) => `<li>${escapeHtml(w)}</li>`)
     .join("")}</ul>`;
 }
 
@@ -264,13 +218,9 @@ function rows(pairs) {
 // ---------------------------------------------------------------- 결과 표시
 
 function renderPrice(container, data) {
-  container.innerHTML = `<div class="record">
-      <p class="record-label">예상 거래가격</p>
-      ${amountMarkup(data.predicted_price_krw)}
-      <p class="margin-note">
-        이 모델은 실제 거래가격을 평균 <strong>±${escapeHtml(formatEok(MODEL_MAE_KRW))}</strong>
-        차이로 맞힙니다. 한 건의 정답이 아니라 추정 범위로 보세요.
-      </p>
+  container.innerHTML = `<div class="box">
+      <h3>예상 거래가격</h3>
+      <p class="headline">${escapeHtml(formatKrw(data.predicted_price_krw))}</p>
       ${rows([
         ["정확한 금액", formatWon(data.predicted_price_krw)],
         ["사용 모델", data.model_name ?? "-"],
@@ -281,9 +231,9 @@ function renderPrice(container, data) {
 
 function renderAnomaly(container, data) {
   const verdict = data.is_suspicious ? "의심" : "의심 아님";
-  container.innerHTML = `<div class="record">
-      <p class="record-label">이상거래 의심 판정</p>
-      <p class="amount">${escapeHtml(verdict)}</p>
+  container.innerHTML = `<div class="box">
+      <h3>이상거래 의심 판정</h3>
+      <p class="headline">${escapeHtml(verdict)}</p>
       ${rows([
         ["의심 점수", `${formatPct(data.suspicion_score * 100)} (임계값 ${formatPct(data.threshold * 100)})`],
         ["기준가격", data.reference_price_krw === null ? "없음 (가격 모델 미준비)" : formatKrw(data.reference_price_krw)],
@@ -298,10 +248,9 @@ function renderScenario(container, data) {
   const diff = Number(data.price_diff_krw);
   const direction = diff > 0 ? "상승" : diff < 0 ? "하락" : "변화 없음";
 
-  container.innerHTML = `<div class="record">
-      <p class="record-label">금리 변경 시 예측가격 비교</p>
-      ${amountMarkup(Math.abs(diff))}
-      <p class="margin-note">${escapeHtml(direction)}</p>
+  container.innerHTML = `<div class="box">
+      <h3>금리 변경 시 예측가격 비교</h3>
+      <p class="headline">${escapeHtml(formatKrw(Math.abs(diff)))} ${escapeHtml(direction)}</p>
       ${rows([
         [`변경 전 (${formatPct(data.base_rate_before)})`, formatKrw(data.predicted_price_before_krw)],
         [`변경 후 (${formatPct(data.base_rate_after)})`, formatKrw(data.predicted_price_after_krw)],
@@ -378,7 +327,7 @@ async function handleRun(name, button) {
 
   if (Object.keys(errors).length > 0) {
     showFieldErrors(errors);
-    container.innerHTML = `<div class="record bad"><span class="tag">입력값 확인 필요</span><p>표시된 항목을 채운 뒤 다시 실행하세요.</p></div>`;
+    container.innerHTML = `<div class="box bad"><h3>입력값 확인 필요</h3><p>표시된 항목을 채운 뒤 다시 실행하세요.</p></div>`;
     return;
   }
 
@@ -396,31 +345,20 @@ async function handleRun(name, button) {
 
 // ---------------------------------------------------------------- 서버 상태
 
-function setStatus(id, text, ready) {
-  const el = $(id);
-  el.textContent = text;
-  el.dataset.state = ready ? "on" : "off";
-}
-
 async function refreshHealth() {
-  ["health-server", "health-price", "health-anomaly"].forEach((id) =>
-    setStatus(id, "확인 중", false),
-  );
+  const el = $("health-text");
+  el.className = "health";
+  el.textContent = "서버 상태 확인 중…";
 
   try {
     const health = await getHealth();
-    setStatus("health-server", `v${health.version}`, true);
-    setStatus("health-price", health.models?.price ? "준비됨" : "미준비", health.models?.price);
-    setStatus(
-      "health-anomaly",
-      health.models?.anomaly ? "준비됨" : "미준비",
-      health.models?.anomaly,
-    );
+    const price = health.models?.price;
+    const anomaly = health.models?.anomaly;
+    el.textContent = `서버 v${health.version} · 가격모델 ${price ? "준비됨" : "미준비"} · 이상거래모델 ${anomaly ? "준비됨" : "미준비"}`;
+    el.classList.add(price && anomaly ? "ok" : "warn");
   } catch (error) {
-    setStatus("health-server", "연결 안 됨", false);
-    setStatus("health-price", "-", false);
-    setStatus("health-anomaly", "-", false);
-    if (!(error instanceof ApiError)) throw error;
+    el.textContent = error instanceof ApiError ? error.message : "서버 상태를 확인할 수 없습니다.";
+    el.classList.add("bad");
   }
 }
 
@@ -431,94 +369,6 @@ function setupDistricts() {
   select.innerHTML =
     `<option value="">선택하세요</option>` +
     SEOUL_DISTRICTS.map((d) => `<option value="${d}">${d}</option>`).join("");
-}
-
-// ---------------------------------------------------------------- 동·단지 선택
-
-function setPlaceholder(select, text, { disabled = true } = {}) {
-  select.innerHTML = `<option value="">${escapeHtml(text)}</option>`;
-  select.disabled = disabled;
-}
-
-/** 단지 목록을 채운다. 동이 선택돼 있으면 그 동만, 아니면 전체. 거래 많은 순. */
-function fillComplexes(dong) {
-  const select = $("complex_id");
-  if (!locations) return;
-
-  const items = locations.complexes
-    .filter((c) => !dong || c.dong === dong)
-    .slice()
-    .sort((a, b) => b.n_deals - a.n_deals);
-
-  if (items.length === 0) {
-    setPlaceholder(select, "해당 동에 단지가 없습니다");
-    return;
-  }
-
-  const label = (c) =>
-    `${dong ? "" : `${c.dong} · `}${c.apartment_name} (거래 ${c.n_deals.toLocaleString("ko-KR")}건)`;
-
-  select.innerHTML =
-    `<option value="">선택 안 함 (자치구 평균으로 추정)</option>` +
-    items
-      .map(
-        (c) =>
-          `<option value="${escapeHtml(c.complex_id)}" data-dong="${escapeHtml(c.dong)}">${escapeHtml(label(c))}</option>`,
-      )
-      .join("");
-  select.disabled = false;
-}
-
-async function loadLocations(district) {
-  const dongSelect = $("dong");
-  const complexSelect = $("complex_id");
-  const hint = $("complex-hint");
-  locations = null;
-
-  if (!district) {
-    setPlaceholder(dongSelect, "자치구를 먼저 선택");
-    setPlaceholder(complexSelect, "자치구를 먼저 선택");
-    return;
-  }
-
-  setPlaceholder(dongSelect, "불러오는 중…");
-  setPlaceholder(complexSelect, "불러오는 중…");
-
-  try {
-    locations = await getLocations(district);
-  } catch (error) {
-    const reason =
-      error instanceof ApiError && error.code === "MODEL_NOT_READY"
-        ? "단지 목록이 서버에 아직 배포되지 않았습니다."
-        : error instanceof ApiError
-          ? error.message
-          : "단지 목록을 불러올 수 없습니다.";
-    setPlaceholder(dongSelect, "목록 없음");
-    setPlaceholder(complexSelect, "목록 없음");
-    hint.textContent = `${reason} 단지 없이도 예측은 되지만 자치구 평균 수준의 추정이 됩니다.`;
-    return;
-  }
-
-  hint.textContent =
-    `${district} 단지 ${locations.complexes.length.toLocaleString("ko-KR")}개. ` +
-    `고르지 않으면 자치구 평균으로만 추정해서 오차가 3배 가까이 커집니다.`;
-
-  dongSelect.innerHTML =
-    `<option value="">전체</option>` +
-    locations.dongs.map((d) => `<option value="${escapeHtml(d)}">${escapeHtml(d)}</option>`).join("");
-  dongSelect.disabled = false;
-  fillComplexes("");
-}
-
-function setupLocations() {
-  $("district").addEventListener("change", (event) => loadLocations(event.target.value));
-  $("dong").addEventListener("change", (event) => fillComplexes(event.target.value));
-
-  // 동을 비워 둔 채로 단지를 고르면 그 단지의 동을 자동으로 맞춰 준다.
-  $("complex_id").addEventListener("change", (event) => {
-    const dong = event.target.selectedOptions[0]?.dataset.dong;
-    if (dong && !$("dong").value) $("dong").value = dong;
-  });
 }
 
 function setupTabs() {
@@ -562,7 +412,7 @@ function setupRunButtons() {
 }
 
 setupDistricts();
-setupLocations();
+setupDistrictMap($("district-map"), $("district"));
 setupTabs();
 setupPriceHint();
 setupMockToggle();

@@ -8,61 +8,39 @@
   </head>
   <body>
     <header class="topbar">
-      <div>
-        <h1>서울 아파트 실거래가 추정</h1>
-        <p class="subtitle">거래 조건을 넣으면 예상 거래가격과 이상거래 의심 여부를 계산합니다.</p>
-      </div>
-      <div class="topbar-tools">
-        <dl class="status" id="health">
-          <div><dt>서버</dt><dd id="health-server">확인 중</dd></div>
-          <div><dt>가격 모델</dt><dd id="health-price">확인 중</dd></div>
-          <div><dt>이상거래 모델</dt><dd id="health-anomaly">확인 중</dd></div>
-        </dl>
-        <button id="health-refresh" type="button" class="ghost">새로고침</button>
+      <h1>서울 아파트 가격 예측 · 이상거래 의심 탐지</h1>
+      <div class="topbar-right">
+        <span id="health-text" class="health">서버 상태 확인 중…</span>
+        <button id="health-refresh" type="button" class="ghost">상태 새로고침</button>
         <label class="mock-toggle">
           <input type="checkbox" id="mock-toggle" />
-          가짜 응답
+          개발용 가짜 응답
         </label>
       </div>
     </header>
 
     <p id="mock-banner" class="banner" hidden>
-      <strong>가짜 응답 모드.</strong>
-      지금 보이는 숫자는 모델 예측이 아니라 화면 확인용 임의의 값입니다. 보고서에 넣지 마세요.
+      <strong>개발용 가짜 응답 모드입니다.</strong>
+      지금 보이는 숫자는 모델 예측이 아니라 화면 확인용으로 만든 임의의 값입니다. 성능 수치로
+      쓰거나 보고서에 넣으면 안 됩니다.
     </p>
 
     <main>
       <form id="feature-form" novalidate>
         <h2>거래 조건</h2>
-        <p class="section-note">아래 세 기능이 같은 조건을 씁니다. <span class="req">*</span>는 필수입니다.</p>
+        <p class="hint">세 기능이 아래 조건을 공통으로 사용합니다. <span class="req">*</span>는 필수입니다.</p>
 
-        <div class="field-grid">
+        <div class="district-picker">
+          <div class="district-map" id="district-map"></div>
           <div class="field">
             <label for="district">자치구 <span class="req">*</span></label>
             <select id="district" name="district"></select>
+            <p class="hint">지도를 클릭하거나 목록에서 고르세요.</p>
             <p class="field-error" data-error-for="district"></p>
           </div>
+        </div>
 
-          <div class="field">
-            <label for="dong">법정동</label>
-            <select id="dong" name="dong" disabled>
-              <option value="">자치구를 먼저 선택</option>
-            </select>
-            <p class="field-error" data-error-for="dong"></p>
-          </div>
-
-          <div class="field span-6">
-            <label for="complex_id">단지</label>
-            <select id="complex_id" name="complex_id" disabled>
-              <option value="">자치구를 먼저 선택</option>
-            </select>
-            <p class="hint" id="complex-hint">
-              고르면 그 단지의 실제 거래 수준을 반영합니다. 비워 두면 자치구 평균으로만
-              추정해서 오차가 3배 가까이 커집니다.
-            </p>
-            <p class="field-error" data-error-for="complex_id"></p>
-          </div>
-
+        <div class="field-grid">
           <div class="field">
             <label for="contract_date">계약일 <span class="req">*</span></label>
             <input type="date" id="contract_date" name="contract_date" />
@@ -99,9 +77,9 @@
         </div>
 
         <h3>규제 (계약일 시점)</h3>
-        <p class="section-note">모르는 항목은 '미지정'으로 두면 보내지 않습니다.</p>
+        <p class="hint">모르는 항목은 '미지정'으로 두면 해당 값을 보내지 않습니다.</p>
         <div class="field-grid">
-          <div class="field span-4">
+          <div class="field">
             <label for="speculation_overheated">투기과열지구</label>
             <select id="speculation_overheated" data-reg="speculation_overheated">
               <option value="">미지정</option>
@@ -109,7 +87,7 @@
               <option value="false">비해당</option>
             </select>
           </div>
-          <div class="field span-4">
+          <div class="field">
             <label for="adjustment_target">조정대상지역</label>
             <select id="adjustment_target" data-reg="adjustment_target">
               <option value="">미지정</option>
@@ -117,7 +95,7 @@
               <option value="false">비해당</option>
             </select>
           </div>
-          <div class="field span-4">
+          <div class="field">
             <label for="land_permit">토지거래허가구역</label>
             <select id="land_permit" data-reg="land_permit">
               <option value="">미지정</option>
@@ -141,7 +119,7 @@
       </div>
 
       <section id="panel-price" class="panel" role="tabpanel" aria-labelledby="tab-price">
-        <p class="section-note">
+        <p class="hint">
           거래 조건만으로 예상 거래가격을 계산합니다. 실제 거래가격은 보내지 않습니다.
         </p>
         <button type="button" class="run" data-run="price">예상가격 계산</button>
@@ -150,7 +128,7 @@
 
       <section id="panel-anomaly" class="panel" role="tabpanel" aria-labelledby="tab-anomaly" hidden>
         <div class="field-grid">
-          <div class="field span-6">
+          <div class="field wide">
             <label for="price_krw">실제 거래가격 (원) <span class="req">*</span></label>
             <input type="number" id="price_krw" min="1" max="1000000000000" step="1" placeholder="2500000000" />
             <p class="hint" id="price-krw-hint">원 단위로 입력합니다.</p>
@@ -162,8 +140,8 @@
       </section>
 
       <section id="panel-scenario" class="panel" role="tabpanel" aria-labelledby="tab-scenario" hidden>
-        <p class="section-note">
-          금리만 바꾸고 나머지 조건은 고정해 예측가격을 비교합니다. 위에 입력한 기준금리는
+        <p class="hint">
+          금리만 바꾸고 나머지 조건은 고정해 예측가격을 비교합니다. 위에 입력한 기준금리 값은
           무시됩니다.
         </p>
         <div class="field-grid">
