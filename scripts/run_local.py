@@ -64,8 +64,16 @@ def main() -> int:
     print("      종료: Ctrl+C\n")
 
     cmd = [
-        sys.executable, "-m", "uvicorn", "apartment_ml.api.serve:app",
-        "--host", "127.0.0.1", "--port", str(args.port), "--log-level", "info",
+        sys.executable,
+        "-m",
+        "uvicorn",
+        "apartment_ml.api.serve:app",
+        "--host",
+        "127.0.0.1",
+        "--port",
+        str(args.port),
+        "--log-level",
+        "info",
     ]
     if args.reload or os.environ.get("RELOAD") == "1":
         cmd.append("--reload")

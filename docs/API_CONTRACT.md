@@ -83,6 +83,30 @@ R² 0.499 는 '자치구+평형 중앙값 조회'(0.603)보다도 낮습니다. 
 - 404 `DISTRICT_NOT_FOUND`: 서울 25개 자치구가 아닌 값
 - 503 `MODEL_NOT_READY`: 단지 목록 파일이 없을 때 (이 엔드포인트만 503이고 예측은 동작)
 
+## `POST /forecast/price`
+향후 N개월 예상 거래가격. 요청은 `/predict/price` 와 같고 `months` (1~24, 기본 12) 만
+더 받습니다.
+
+- 응답 200:
+```json
+{
+  "base_month": "2026-09",
+  "model_name": "gradient_boosting",
+  "points": [
+    {"month": "2026-10", "horizon": 1,
+     "predicted_price_krw": 3544075000, "low_krw": 2901600000, "high_krw": 4328900000}
+  ],
+  "warnings": ["12개월 뒤 구간은 ±25% 입니다. 이 가운데 ±20%p 는 ..."]
+}
+```
+- `base_month` 는 예측의 출발이 되는 마지막 실거래 집계월입니다. `points` 는 그 다음
+  달부터 `months` 개입니다.
+- `low_krw` ~ `high_krw` 는 **80% 구간**입니다. 지평이 길수록 넓어집니다.
+- **구간을 반드시 같이 보여주세요.** 12개월 뒤 구간이 ±25% 수준이라 가운뎃값만 보여주면
+  틀린 인상을 줍니다. 구간의 대부분(±20%p)은 시점이 아니라 같은 조건에서도 거래마다
+  가격이 다르기 때문이고, `warnings` 에 그 분해가 들어 있습니다.
+- 503 `MODEL_NOT_READY`: 가격 모델이 없거나, 지수가 24개월치가 안 될 때
+
 ## `GET /health`
 ```json
 {"status": "ok", "version": "0.1.0", "models": {"price": false, "anomaly": false}}

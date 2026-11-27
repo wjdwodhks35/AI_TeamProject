@@ -138,6 +138,9 @@
         <button type="button" role="tab" id="tab-scenario" data-tab="scenario" aria-selected="false" aria-controls="panel-scenario">
           금리 시나리오
         </button>
+        <button type="button" role="tab" id="tab-forecast" data-tab="forecast" aria-selected="false" aria-controls="panel-forecast">
+          시세 전망
+        </button>
       </div>
 
       <section id="panel-price" class="panel" role="tabpanel" aria-labelledby="tab-price">
@@ -180,6 +183,26 @@
         </div>
         <button type="button" class="run" data-run="scenario">금리 비교</button>
         <div class="result" id="result-scenario"></div>
+      </section>
+
+      <section id="panel-forecast" class="panel" role="tabpanel" aria-labelledby="tab-forecast" hidden>
+        <p class="hint">
+          같은 조건이 앞으로 몇 달 뒤 얼마가 될지 추정합니다. 과거 시세의 추세를 그대로
+          연장하면 오히려 더 틀리기 때문에, 현재 수준을 유지하면서 아주 약한 추세만
+          반영합니다.
+        </p>
+        <div class="field-grid">
+          <div class="field">
+            <label for="forecast_months">예측 기간</label>
+            <select id="forecast_months" name="forecast_months">
+              <option value="6">6개월</option>
+              <option value="12" selected>12개월</option>
+              <option value="24">24개월</option>
+            </select>
+          </div>
+        </div>
+        <button type="button" class="run" data-run="forecast">시세 전망 보기</button>
+        <div class="result" id="result-forecast"></div>
       </section>
     </main>
 

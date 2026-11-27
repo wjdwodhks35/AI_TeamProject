@@ -102,6 +102,16 @@ export function getLocations(district) {
   return request(`/locations/${encodeURIComponent(district)}`);
 }
 
+/**
+ * POST /forecast/price — 향후 N개월 예상 거래가격.
+ *
+ * 회귀가 시세 대비 상대가격을 학습해서, 미래 가격은 시장지수만 내다보면 된다.
+ * 응답의 low_krw~high_krw 는 80% 구간이고 지평이 길수록 넓어진다.
+ */
+export function forecastPrice(features, months = 12) {
+  return request("/forecast/price", { method: "POST", body: { ...features, months } });
+}
+
 /** GET /health — 서버 버전과 모델별 준비 여부 */
 export function getHealth() {
   return request("/health");

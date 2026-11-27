@@ -32,6 +32,9 @@ from apartment_ml.api.schemas import (
     AnomalyPredictionResponse,
     ComplexItem,
     ErrorResponse,
+    ForecastPointOut,
+    ForecastRequest,
+    ForecastResponse,
     HealthResponse,
     InterestRateScenarioRequest,
     InterestRateScenarioResponse,
@@ -43,6 +46,12 @@ from apartment_ml.config import get_cors_origins, get_settings
 from apartment_ml.data.preprocess import add_price_features
 from apartment_ml.models.base import AnomalyDetector, ModelNotReadyError, PricePredictor
 from apartment_ml.models.complex_directory import ComplexDirectory, ComplexDirectoryError
+from apartment_ml.models.forecast import (
+    BAND_Z,
+    ForecastError,
+    MarketIndexForecaster,
+    forecast_prices,
+)
 from apartment_ml.scenarios.interest_rate import (
     ScenarioNotSupportedError,
     build_feature_frame,
@@ -86,6 +95,22 @@ def _not_ready(message: str) -> HTTPException:
         status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
         detail={"code": "MODEL_NOT_READY", "message": message},
     )
+
+
+def _build_forecaster(price_model: object) -> MarketIndexForecaster | None:
+    """가격 모델 안의 시장지수로 예측기를 만든다.
+
+    지수가 모델 안에 들어 있으므로 원본 CSV 가 없어도 되고, 모델과 지수가 어긋날
+    일도 없다. 백테스트까지 해도 0.2초면 끝난다.
+    """
+    market = getattr(price_model, "market_", None)
+    if market is None:
+        return None
+    try:
+        return MarketIndexForecaster.from_index(market)
+    except ForecastError as exc:
+        logger.warning("시세 예측기를 만들 수 없습니다: %s", exc)
+        return None
 
 
 def _load_complex_directory() -> ComplexDirectory | None:
@@ -133,6 +158,9 @@ def create_app(
                 app.state.anomaly_model = loaded_anomaly
             if complex_directory is None:
                 app.state.complex_directory = _load_complex_directory()
+        app.state.forecaster = (
+            _build_forecaster(app.state.price_model) if app.state.price_model else None
+        )
         yield
 
     app = FastAPI(
@@ -144,6 +172,7 @@ def create_app(
     app.state.price_model = price_model
     app.state.anomaly_model = anomaly_model
     app.state.complex_directory = complex_directory
+    app.state.forecaster = None
     app.add_middleware(
         CORSMiddleware,
         allow_origins=get_cors_origins(),
@@ -310,6 +339,55 @@ def create_app(
             )
         return PricePredictionResponse(
             predicted_price_krw=round(pred), model_name=model.name, warnings=warnings
+        )
+
+    @app.post(
+        "/forecast/price",
+        response_model=ForecastResponse,
+        responses=NOT_READY_RESPONSES,
+        tags=["prediction"],
+    )
+    def forecast_price(body: ForecastRequest, request: Request) -> ForecastResponse:
+        """향후 N개월 예상 거래가격.
+
+        회귀가 시세 대비 상대가격을 학습하므로, 미래 가격은 시장지수만 내다보면 된다.
+        구간은 백테스트로 잰 지평별 오차와 모델 잔차를 합쳐 만든 80% 범위다.
+        """
+        model = _price_model(request)
+        forecaster: MarketIndexForecaster | None = request.app.state.forecaster
+        if forecaster is None:
+            raise _not_ready("시세 예측기가 준비되지 않았습니다 (가격 모델을 다시 학습하세요).")
+
+        features = body.model_dump(exclude={"months"})
+        frame = build_feature_frame(S.ApartmentFeatures(**features))
+        try:
+            points = forecast_prices(model, frame, forecaster, months=body.months)
+        except (ForecastError, ValueError) as exc:
+            raise _not_ready(str(exc)) from exc
+
+        warnings = _location_warnings(body, request.app.state.complex_directory)
+        # 구간이 넓은 이유를 나눠서 알려 준다. 대부분은 시점이 아니라 개별 거래 편차다.
+        base_pct = (math.exp(BAND_Z * getattr(model, "log_residual_sd_", 0.0)) - 1) * 100
+        last_pct = (points[-1].high_krw / points[-1].price_krw - 1) * 100
+        warnings.append(
+            f"{body.months}개월 뒤 구간은 ±{last_pct:.0f}% 입니다. 이 가운데 ±{base_pct:.0f}%p 는 "
+            f"시점과 무관하게 같은 조건에서도 거래마다 가격이 다르기 때문이고, 나머지가 "
+            f"시세를 내다보는 몫입니다."
+        )
+        return ForecastResponse(
+            base_month=str(forecaster.last_month),
+            model_name=model.name,
+            points=[
+                ForecastPointOut(
+                    month=p.month,
+                    horizon=p.horizon,
+                    predicted_price_krw=round(p.price_krw),
+                    low_krw=round(p.low_krw),
+                    high_krw=round(p.high_krw),
+                )
+                for p in points
+            ],
+            warnings=warnings,
         )
 
     @app.post(

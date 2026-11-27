@@ -108,6 +108,8 @@ class PriceRegressionModel:
         self.pipeline: Pipeline | None = None
         # 로그 복원 편향 보정계수. calibrate() 로 정하기 전까지는 1.0(보정 없음).
         self.log_bias_factor_: float = 1.0
+        # 로그 잔차의 산포. calibrate() 에서 정해진다.
+        self.log_residual_sd_: float = 0.0
         self.metadata: dict[str, Any] = {}
 
     # -- 계약 ---------------------------------------------------------------
@@ -250,20 +252,32 @@ class PriceRegressionModel:
             raise ValueError("보정계수를 구할 수 있는 행이 2개 미만입니다.")
         variance = float(np.var(np.log(price[ok]) - np.log(pred[ok])))
         self.log_bias_factor_ = float(np.exp(variance / 2))
+        # 로그 잔차의 산포. 미래 예측의 구간을 만들 때 '현재 시점 오차' 몫으로 쓴다
+        # (models/forecast.py).
+        self.log_residual_sd_ = float(np.sqrt(variance))
         self.metadata["log_bias_factor"] = self.log_bias_factor_
+        self.metadata["log_residual_sd"] = self.log_residual_sd_
         self.metadata["log_bias_calibrated_on"] = _date_range(holdout)
         return self.log_bias_factor_
 
-    def set_log_bias_factor(self, factor: float, *, source: object = None) -> None:
-        """다른 구간에서 구한 보정계수를 그대로 적용한다.
+    def set_log_bias_factor(
+        self, factor: float, *, residual_sd: float | None = None, source: object = None
+    ) -> None:
+        """다른 구간에서 구한 보정계수(와 잔차 산포)를 그대로 적용한다.
 
         배포본은 valid 까지 넣어 다시 학습하므로 자기 자신에게는 보정계수를 구할
         구간이 남지 않는다. valid 를 넣기 전 모델에서 구한 값을 가져와 쓴다.
+        잔차 산포는 미래 예측의 구간 폭에 쓰이므로 같이 옮긴다 (models/forecast.py).
         """
         if not np.isfinite(factor) or factor <= 0:
             raise ValueError(f"보정계수는 0보다 큰 유한한 수여야 합니다: {factor!r}")
         self.log_bias_factor_ = float(factor)
         self.metadata["log_bias_factor"] = float(factor)
+        if residual_sd is not None:
+            if not np.isfinite(residual_sd) or residual_sd < 0:
+                raise ValueError(f"잔차 산포는 0 이상의 유한한 수여야 합니다: {residual_sd!r}")
+            self.log_residual_sd_ = float(residual_sd)
+            self.metadata["log_residual_sd"] = float(residual_sd)
         if source is not None:
             self.metadata["log_bias_calibrated_on"] = source
 
@@ -275,6 +289,22 @@ class PriceRegressionModel:
 
     def predict(self, X: pd.DataFrame) -> np.ndarray:
         return self._predict(X)
+
+    def predict_with_market(self, X: pd.DataFrame, market: MarketIndex) -> np.ndarray:
+        """시장지수만 다른 것으로 바꿔 예측한다.
+
+        학습된 모델 출력은 '이 아파트가 시세 대비 어느 수준인가' 라서 시점과 무관하다.
+        시점은 전부 시장지수가 들고 있으므로, 미래 달까지 연장한 지수를 넣으면 그대로
+        미래 가격이 된다 (models/forecast.py).
+        """
+        if self.market_ is None:
+            raise ModelNotReadyError("상대가격으로 학습한 모델에서만 쓸 수 있습니다.")
+        original = self.market_
+        try:
+            self.market_ = market
+            return self._predict(X)
+        finally:
+            self.market_ = original
 
     def evaluate(
         self, data: pd.DataFrame, y: pd.Series | np.ndarray | None = None

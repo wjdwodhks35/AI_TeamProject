@@ -192,7 +192,9 @@ def main() -> None:
         market_index=market,
         random_state=args.seed,
     ).fit(pd.concat([split.train, split.valid]))
-    deployed.set_log_bias_factor(factor, source=_date_range(split.valid))
+    deployed.set_log_bias_factor(
+        factor, residual_sd=model.log_residual_sd_, source=_date_range(split.valid)
+    )
     pred_test = deployed.predict(split.test)
     print_row(
         f"{name} + 보정 + train+valid 학습",

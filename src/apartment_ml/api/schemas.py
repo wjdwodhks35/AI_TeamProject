@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from apartment_ml.models.forecast import MAX_HORIZON as MAX_FORECAST_MONTHS
 from apartment_ml.schemas import (
     MAX_BASE_RATE,
     MAX_PRICE_KRW,
@@ -67,6 +68,32 @@ class LocationsResponse(BaseModel):
 class PricePredictionResponse(BaseModel):
     predicted_price_krw: int = Field(..., description="예상 거래가격(원)")
     model_name: str
+    warnings: list[str] = Field(default_factory=list)
+
+
+class ForecastRequest(ApartmentFeatures):
+    """향후 N개월 예측 요청. 계약일은 '지금 기준'을 뜻하며 예측 달은 서버가 정한다."""
+
+    model_config = ConfigDict(
+        extra="forbid", json_schema_extra={"examples": [{**EXAMPLE_FEATURES, "months": 12}]}
+    )
+    months: int = Field(12, ge=1, le=MAX_FORECAST_MONTHS, description="몇 개월 앞까지")
+
+
+class ForecastPointOut(BaseModel):
+    """한 달치 예측. 구간은 80% 범위이고 지평이 길수록 넓어진다."""
+
+    month: str = Field(..., examples=["2026-10"], description="YYYY-MM")
+    horizon: int = Field(..., description="기준월로부터 몇 번째 달인지")
+    predicted_price_krw: int
+    low_krw: int = Field(..., description="80% 구간 하한")
+    high_krw: int = Field(..., description="80% 구간 상한")
+
+
+class ForecastResponse(BaseModel):
+    base_month: str = Field(..., description="예측의 출발이 되는 마지막 실거래 집계월")
+    model_name: str
+    points: list[ForecastPointOut]
     warnings: list[str] = Field(default_factory=list)
 
 

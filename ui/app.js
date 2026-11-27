@@ -4,6 +4,7 @@ import {
   ApiError,
   SEOUL_DISTRICTS,
   getHealth,
+  forecastPrice,
   getLocations,
   predictAnomaly,
   predictPrice,
@@ -303,6 +304,147 @@ function renderScenario(container, data) {
 
 // ---------------------------------------------------------------- 실행
 
+// ---------------------------------------------------------------- 전망 그래프
+
+const CHART = {
+  w: 640,
+  h: 240,
+  left: 56,
+  right: 16,
+  top: 16,
+  bottom: 28,
+  line: "#1f1f1f",
+  band: "#c9ccd1",
+  grid: "#e6e6e6",
+};
+
+/** 가격 축 눈금을 읽기 좋은 간격으로 고른다. */
+function ticks(min, max, count = 4) {
+  const raw = (max - min) / count;
+  const magnitude = 10 ** Math.floor(Math.log10(raw));
+  const step = [1, 2, 2.5, 5, 10].map((m) => m * magnitude).find((v) => v >= raw) ?? raw;
+  const out = [];
+  for (let v = Math.ceil(min / step) * step; v <= max; v += step) out.push(v);
+  return out;
+}
+
+/**
+ * 전망 밴드 차트. 선 하나 + 80% 구간 음영.
+ *
+ * 구간 음영은 흰 바탕 대비 1.61:1 로 낮다. 색만으로는 못 읽으므로 양 끝 값을 직접
+ * 적고 아래에 표를 같이 둔다 (색에 의존하지 않는 경로).
+ */
+function bandChart(points) {
+  const { w, h, left, right, top, bottom } = CHART;
+  const innerW = w - left - right;
+  const innerH = h - top - bottom;
+
+  const lows = points.map((p) => p.low_krw);
+  const highs = points.map((p) => p.high_krw);
+  const min = Math.min(...lows);
+  const max = Math.max(...highs);
+  const pad = (max - min) * 0.08 || 1;
+  const lo = min - pad;
+  const hi = max + pad;
+
+  const x = (i) => left + (points.length === 1 ? innerW / 2 : (i * innerW) / (points.length - 1));
+  const y = (v) => top + innerH - ((v - lo) / (hi - lo)) * innerH;
+
+  const area =
+    points.map((p, i) => `${i ? "L" : "M"}${x(i).toFixed(1)},${y(p.high_krw).toFixed(1)}`).join("") +
+    // 상한을 왼쪽에서 오른쪽으로 그린 뒤, 하한을 오른쪽에서 왼쪽으로 되짚어 닫는다.
+    // 마지막 하한점을 빠뜨리면 오른쪽 끝이 어긋난다.
+    points
+      .map((_, i) => {
+        const j = points.length - 1 - i;
+        return `L${x(j).toFixed(1)},${y(points[j].low_krw).toFixed(1)}`;
+      })
+      .join("") +
+    "Z";
+  const line = points
+    .map((p, i) => `${i ? "L" : "M"}${x(i).toFixed(1)},${y(p.predicted_price_krw).toFixed(1)}`)
+    .join("");
+
+  const gridLines = ticks(lo, hi)
+    .map(
+      (v) =>
+        `<line x1="${left}" x2="${w - right}" y1="${y(v).toFixed(1)}" y2="${y(v).toFixed(1)}" stroke="${CHART.grid}"/>` +
+        `<text x="${left - 8}" y="${(y(v) + 4).toFixed(1)}" text-anchor="end" class="axis">${escapeHtml(formatKrw(v))}</text>`,
+    )
+    .join("");
+
+  const monthLabel = (i) =>
+    `<text x="${x(i).toFixed(1)}" y="${h - 8}" text-anchor="${i === 0 ? "start" : "end"}" class="axis">${escapeHtml(points[i].month)}</text>`;
+
+  const endLabels = [0, points.length - 1]
+    .map((i) => {
+      const p = points[i];
+      return (
+        `<circle cx="${x(i).toFixed(1)}" cy="${y(p.predicted_price_krw).toFixed(1)}" r="4" fill="${CHART.line}"/>` +
+        `<text x="${x(i).toFixed(1)}" y="${(y(p.predicted_price_krw) - 10).toFixed(1)}" ` +
+        `text-anchor="${i === 0 ? "start" : "end"}" class="point-label">${escapeHtml(formatKrw(p.predicted_price_krw))}</text>`
+      );
+    })
+    .join("");
+
+  const hover = points
+    .map(
+      (p, i) =>
+        `<g class="hit"><rect x="${(x(i) - innerW / points.length / 2).toFixed(1)}" y="${top}" ` +
+        `width="${(innerW / points.length).toFixed(1)}" height="${innerH}" fill="transparent"/>` +
+        `<line x1="${x(i).toFixed(1)}" x2="${x(i).toFixed(1)}" y1="${top}" y2="${top + innerH}" stroke="${CHART.line}" stroke-dasharray="2 2"/>` +
+        `<title>${escapeHtml(p.month)} · ${escapeHtml(formatKrw(p.predicted_price_krw))} ` +
+        `(${escapeHtml(formatKrw(p.low_krw))} ~ ${escapeHtml(formatKrw(p.high_krw))})</title></g>`,
+    )
+    .join("");
+
+  return (
+    `<svg class="chart" viewBox="0 0 ${w} ${h}" role="img" ` +
+    `aria-label="향후 ${points.length}개월 예상 거래가격과 80% 구간">` +
+    `${gridLines}<path d="${area}" fill="${CHART.band}" opacity="0.55"/>` +
+    `<path d="${line}" fill="none" stroke="${CHART.line}" stroke-width="2"/>` +
+    `${endLabels}${monthLabel(0)}${monthLabel(points.length - 1)}${hover}</svg>`
+  );
+}
+
+function forecastTable(points) {
+  const body = points
+    .map(
+      (p) =>
+        `<tr><td>${escapeHtml(p.month)}</td><td>${escapeHtml(formatKrw(p.predicted_price_krw))}</td>` +
+        `<td>${escapeHtml(formatKrw(p.low_krw))} ~ ${escapeHtml(formatKrw(p.high_krw))}</td></tr>`,
+    )
+    .join("");
+  return (
+    `<details class="table-view"><summary>숫자로 보기</summary>` +
+    `<table><thead><tr><th>달</th><th>예상</th><th>80% 구간</th></tr></thead>` +
+    `<tbody>${body}</tbody></table></details>`
+  );
+}
+
+function renderForecast(container, data) {
+  const points = data.points ?? [];
+  if (points.length === 0) {
+    container.innerHTML = `<div class="box bad"><h3>전망 없음</h3><p>예측 결과가 비어 있습니다.</p></div>`;
+    return;
+  }
+  const last = points[points.length - 1];
+  container.innerHTML = `<div class="box">
+      <h3>향후 ${points.length}개월 예상 거래가격</h3>
+      <p class="hint">
+        ${escapeHtml(data.base_month)} 실거래 집계를 기준으로 합니다. 음영은 80% 구간이고
+        멀리 볼수록 넓어집니다.
+      </p>
+      ${bandChart(points)}
+      ${rows([
+        [`${escapeHtml(last.month)} 예상`, formatKrw(last.predicted_price_krw)],
+        ["같은 달 80% 구간", `${formatKrw(last.low_krw)} ~ ${formatKrw(last.high_krw)}`],
+      ])}
+      ${forecastTable(points)}
+      ${warningList(data.warnings)}
+    </div>`;
+}
+
 const RUNNERS = {
   price: {
     container: () => $("result-price"),
@@ -325,6 +467,16 @@ const RUNNERS = {
         : predictAnomaly(features, priceKrw);
     },
     render: renderAnomaly,
+  },
+  forecast: {
+    container: () => $("result-forecast"),
+    extra() {
+      return { value: Number($("forecast_months").value) };
+    },
+    async run(features, months) {
+      return forecastPrice(features, months);
+    },
+    render: renderForecast,
   },
   scenario: {
     container: () => $("result-scenario"),
